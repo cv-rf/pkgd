@@ -1,10 +1,11 @@
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::fs::File;
-use std::path::{Path, PathBuf};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::fs::File;
+use std::path::{Path, PathBuf};
 use tar::Archive;
 
 const REGISTRY_URL: &str = "http://192.168.137.1:9999";
@@ -24,7 +25,10 @@ pub struct LocalPackageRecord {
     pub files: Vec<String>,
 }
 
-pub fn download_and_install_package(package_name: &str, target_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn download_and_install_package(
+    package_name: &str,
+    target_root: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let api_url = format!("{}/api/packages/{}", REGISTRY_URL, package_name);
     println!("Fetching manifest from: {}", api_url);
 
@@ -50,6 +54,25 @@ pub fn download_and_install_package(package_name: &str, target_root: &Path) -> R
     let mut tmp_file = File::create(&tmp_archive_path)?;
 
     tarball_response.copy_to(&mut tmp_file)?;
+
+    if let Some(expected_hash) = &manifest.checksum {
+        println!("Verifying SHA-256 checksum...");
+        let tarball_bytes = fs::read(&tmp_archive_path)?;
+        
+        let mut hasher = Sha256::new();
+        hasher.update(&tarball_bytes);
+        let actual_hash = hex::encode(hasher.finalize());
+
+        if actual_hash != *expected_hash {
+            let _ = fs::remove_file(&tmp_archive_path);
+            return Err(format!(
+                "SECURITY ALERT: Checksum mismatch!\nExpected: {}\nGot:      {}",
+                expected_hash, actual_hash
+            )
+            .into());
+        }
+        println!("Checksum verified successfully.");
+    }
 
     println!("Download complete. Handing off to local installation pipeline...");
 
@@ -82,7 +105,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
         None => return Err("Failed to find manifest.json in package archive".into()),
     };
 
-    println!("Found package: {} ({})", manifest.name, manifest.version);
+    println!("Extracting package: {} ({})", manifest.name, manifest.version);
 
     let file = File::open(archive_path)?;
     let tar_gz = GzDecoder::new(file);
@@ -122,7 +145,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
     let db_file = File::create(db_file_path)?;
     serde_json::to_writer_pretty(db_file, &record)?;
 
-    println!("Successfully registered {} in database.", record.manifest.name);
+    println!("Successfully registered {} in local database.", record.manifest.name);
     Ok(())
 }
 
@@ -145,7 +168,10 @@ pub fn list_packages(target_root: &Path) -> Result<(), Box<dyn std::error::Error
             let file = File::open(path)?;
             let record: LocalPackageRecord = serde_json::from_reader(file)?;
 
-            println!("{:<20} {:<10} {}", record.manifest.name, record.manifest.version, record.manifest.description);
+            println!(
+                "{:<20} {:<10} {}",
+                record.manifest.name, record.manifest.version, record.manifest.description
+            );
         }
     }
 
@@ -170,7 +196,7 @@ pub fn remove_package(package_name: &str, target_root: &Path) -> Result<(), Box<
         if full_path.exists() {
             if full_path.is_file() {
                 fs::remove_file(&full_path)?;
-                println!("Deleted file: {:?}", full_path); 
+                println!("Deleted file: {:?}", full_path);
             }
         } else {
             println!("Warning: File missing during uninstall: {:?}", full_path);
@@ -194,14 +220,32 @@ pub fn remove_package(package_name: &str, target_root: &Path) -> Result<(), Box<
     }
 
     fs::remove_file(db_file_path)?;
-    println!("Successfully removed {} from database.", package_name);
+    println!("Successfully removed {} from local database.", package_name);
 
     Ok(())
 }
 
+fn get_credentials_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = std::env::var("HOME").map_err(|_| "Could not find HOME directory. Are you on Linux/macOS?")?;
+    Ok(Path::new(&home).join(".pkgd").join("credentials"))
+}
+
+fn get_api_token() -> Result<String, Box<dyn std::error::Error>> {
+    if let Ok(token) = std::env::var("PKGD_API_KEY") {
+        return Ok(token);
+    }
+
+    let cred_path = get_credentials_path()?;
+    if cred_path.exists() {
+        let token = fs::read_to_string(cred_path)?;
+        return Ok(token.trim().to_string());
+    }
+
+    Err("Not logged in. Please run `pkgd login <token>` or set the PKGD_API_KEY environment variable.".into())
+}
+
 pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let api_key = std::env::var("PKGD_API_KEY")
-        .expect("PKGD_API_KEY environment variable is missing. You must set it to publish packages!");
+    let api_key = get_api_token()?;
 
     let manifest_path = source_dir.join("manifest.json");
     if !manifest_path.exists() {
@@ -237,7 +281,8 @@ pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Erro
         .part("tarball", part_tarball);
 
     let client = reqwest::blocking::Client::new();
-    let res = client.post(format!("{}/api/publish", REGISTRY_URL))
+    let res = client
+        .post(format!("{}/api/publish", REGISTRY_URL))
         .bearer_auth(api_key)
         .multipart(form)
         .send()?;
@@ -246,18 +291,18 @@ pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Erro
         println!("Package published successfully!");
     } else if res.status() == reqwest::StatusCode::UNAUTHORIZED {
         println!("Unauthorized! Invalid API token.");
+    } else if res.status() == reqwest::StatusCode::FORBIDDEN {
+        println!("Forbidden! You do not own this package.");
     } else {
-        println!("Failed to publish package. Server responded with: {}", res.status());
+        println!(
+            "Failed to publish package. Server responded with: {}",
+            res.status()
+        );
     }
 
     let _ = fs::remove_file(tmp_tar_path);
 
     Ok(())
-}
-
-fn get_credentials_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home = std::env::var("HOME").map_err(|_| "Could not find HOME directory. Are you on Linux/macOS?")?;
-    Ok(Path::new(&home).join(".pkgd").join("credentials"))
 }
 
 pub fn login(token: &str) -> Result<(), Box<dyn std::error::Error>> {
