@@ -222,7 +222,7 @@ pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Erro
 
     println!("Archive created successfully. Uploading to registry...");
 
-    let tarball_bytes = fs::read(&tmp_tar_path);
+    let tarball_bytes = fs::read(&tmp_tar_path)?;
 
     let part_manifest = reqwest::blocking::multipart::Part::text(manifest_str);
     let part_tarball = reqwest::blocking::multipart::Part::bytes(tarball_bytes)
