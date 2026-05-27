@@ -200,13 +200,8 @@ pub fn remove_package(package_name: &str, target_root: &Path) -> Result<(), Box<
 }
 
 pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let cred_path = get_credentials_path()?;
-    if !cred_path.exists() {
-        return Err("Not logged in. Please run `pkgd login <token>` first.".into());
-    }
-
-    let token = fs::read_to_string(&cred_path)?;
-    let auth_header = format!("Bearer {}", token.trim());
+    let api_key = std::env::var("PKGD_API_KEY")
+        .expect("PKGD_API_KEY environment variable is missing. You must set it to publish packages!");
 
     let manifest_path = source_dir.join("manifest.json");
     if !manifest_path.exists() {
@@ -243,7 +238,7 @@ pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Erro
 
     let client = reqwest::blocking::Client::new();
     let res = client.post(format!("{}/api/publish", REGISTRY_URL))
-        .header("Authorization", auth_header)
+        .bearer_auth(api_key)
         .multipart(form)
         .send()?;
 
