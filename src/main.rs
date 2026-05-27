@@ -20,6 +20,9 @@ enum Commands {
         package_name: String,
     },
     List,
+    Publish {
+        source_dir: PathBuf,
+    },
 }
 
 fn main() {
@@ -53,6 +56,11 @@ fn main() {
             println!("Removing package: {}", package_name);
             if let Err(e) = package::remove_package(package_name, &target_root) {
                 eprintln!("Error during removal: {}", e)
+            }
+        }
+        Commands::Publish { source_dir } => {
+            if let Err(e) = package::publish_package(&source_dir) {
+                eprintln!("Publish Error: {}", e);
             }
         }
     }

@@ -3,6 +3,8 @@ use std::fs;
 use std::fs::File;
 use std::path::Path;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use tar::Archive;
 
 const REGISTRY_URL: &str = "http://192.168.137.1:9999";
@@ -193,6 +195,56 @@ pub fn remove_package(package_name: &str, target_root: &Path) -> Result<(), Box<
 
     fs::remove_file(db_file_path)?;
     println!("Successfully removed {} from database.", package_name);
+
+    Ok(())
+}
+
+pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let manifest_path = source_dir.join("manifest.json");
+    if !manifest_path.exists() {
+        return Err("manifest.json not found in the source directory.".into());
+    }
+
+    let manifest_str = fs::read_to_string(&manifest_path)?;
+    let manifest: PackageManifest = serde_json::from_str(&manifest_str)?;
+
+    println!("Packaging {} version {}...", manifest.name, manifest.version);
+
+    let tarball_name = format!("{}-{}.tar.gz", manifest.name, manifest.version);
+    let tmp_tar_path = std::env::temp_dir().join(&tarball_name);
+    let tar_file = File::create(&tmp_tar_path)?;
+
+    let enc = GzEncoder::new(tar_file, Compression::default());
+    let mut tar_builder = tar::Builder::new(enc);
+
+    tar_builder.append_dir_all(".", source_dir)?;
+    tar_builder.into_inner()?.finish()?;
+
+    println!("Archive created successfully. Uploading to registry...");
+
+    let tarball_bytes = fs::read(&tmp_tar_path);
+
+    let part_manifest = reqwest::blocking::multipart::Part::text(manifest_str);
+    let part_tarball = reqwest::blocking::multipart::Part::bytes(tarball_bytes)
+        .file_name(tarball_name)
+        .mime_str("application/gzip")?;
+
+    let form = reqwest::blocking::multipart::Form::new()
+        .part("manifest", part_manifest)
+        .part("tarball", part_tarball);
+
+    let client = reqwest::blocking::Client::new();
+    let res = client.post(format!("{}/api/publish", REGISTRY_URL))
+        .multipart(form)
+        .send()?;
+
+    if res.status().is_success() {
+        println!("Package published successfully!");
+    } else {
+        println!("Failed to publish package. Server responded with: {}", res.status());
+    }
+
+    let _ = fs::remove_file(tmp_tar_path);
 
     Ok(())
 }
