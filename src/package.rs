@@ -200,6 +200,14 @@ pub fn remove_package(package_name: &str, target_root: &Path) -> Result<(), Box<
 }
 
 pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let cred_path = get_credentials_path()?;
+    if !cred_path.exists() {
+        return Err("Not logged in. Please run `pkgd login <token>` first.".into());
+    }
+
+    let token = fs::read_to_string(&cred_path)?;
+    let auth_header = format!("Bearer {}", token.trim());
+
     let manifest_path = source_dir.join("manifest.json");
     if !manifest_path.exists() {
         return Err("manifest.json not found in the source directory.".into());
@@ -235,16 +243,37 @@ pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Erro
 
     let client = reqwest::blocking::Client::new();
     let res = client.post(format!("{}/api/publish", REGISTRY_URL))
+        .header("Authorization", auth_header)
         .multipart(form)
         .send()?;
 
     if res.status().is_success() {
         println!("Package published successfully!");
+    } else if res.status() == reqwest::StatusCode::UNAUTHORIZED {
+        println!("Unauthorized! Invalid API token.");
     } else {
         println!("Failed to publish package. Server responded with: {}", res.status());
     }
 
     let _ = fs::remove_file(tmp_tar_path);
 
+    Ok(())
+}
+
+fn get_credentials_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let home = std::env::var("HOME").map_err(|_| "Could not find HOME directory. Are you on Linux/macOS?")?;
+    Ok(Path::new(&home).join(".pkgd").join("credentials"))
+}
+
+pub fn login(token: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let cred_path = get_credentials_path();
+
+    if let Some(parent) = cred_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    fs::write(&cred_path, token.trm())?;
+
+    println!("Logged in successfully. Token saved to {:?}", cred_path);
     Ok(())
 }

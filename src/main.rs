@@ -23,6 +23,9 @@ enum Commands {
     Publish {
         source_dir: PathBuf,
     },
+    Login {
+        token: String,
+    },
 }
 
 fn main() {
@@ -61,6 +64,11 @@ fn main() {
         Commands::Publish { source_dir } => {
             if let Err(e) = package::publish_package(&source_dir) {
                 eprintln!("Publish Error: {}", e);
+            }
+        }
+        Commands::Login { token } => {
+            if let Err(e) = package::login(token) {
+                eprintln!("Login Error: {}", e);
             }
         }
     }
