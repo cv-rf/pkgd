@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -266,13 +266,13 @@ fn get_credentials_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
 }
 
 pub fn login(token: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let cred_path = get_credentials_path();
+    let cred_path = get_credentials_path()?;
 
     if let Some(parent) = cred_path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    fs::write(&cred_path, token.trm())?;
+    fs::write(&cred_path, token.trim())?;
 
     println!("Logged in successfully. Token saved to {:?}", cred_path);
     Ok(())
