@@ -5,7 +5,7 @@ use std::path::Path;
 use flate2::read::GzDecoder;
 use tar::Archive;
 
-const REGISTRY_URL: &str = "http://127.0.0.1:9999";
+const REGISTRY_URL: &str = "http://192.168.137.1:9999";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PackageManifest {
@@ -69,7 +69,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
         let mut entry = entry?;
         let path = entry.path()?;
 
-        if path.to_str() == Some("metadata.json") {
+        if path.to_str() == Some("manifest.json") {
             manifest = Some(serde_json::from_reader(&mut entry)?);
             break;
         }
@@ -77,7 +77,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
 
     let manifest = match manifest {
         Some(m) => m,
-        None => return Err("Failed to find metadata.json in package archive".into()),
+        None => return Err("Failed to find manifest.json in package archive".into()),
     };
 
     println!("Found package: {} ({})", manifest.name, manifest.version);
@@ -92,7 +92,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
         let mut entry = entry?;
         let path = entry.path()?.to_path_buf();
 
-        if path.to_str() != Some("metadata.json") {
+        if path.to_str() != Some("manifest.json") {
             let dest_path = target_root.join(&path);
 
             if let Some(parent) = dest_path.parent() {
