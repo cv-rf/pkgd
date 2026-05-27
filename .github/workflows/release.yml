@@ -28,8 +28,6 @@ jobs:
         run: |
           cd target/release
           
-          mv pkgd pkgd
-          
           tar -czf ../../pkgd.tar.gz pkgd
           cd ../..
 
