@@ -1,7 +1,7 @@
 mod package;
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "pkgd")]
@@ -41,7 +41,7 @@ fn is_root() -> bool {
     false
 }
 
-fn main() => Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let target_root = cli.root;
 
@@ -51,14 +51,14 @@ fn main() => Result<(), Box<dyn std::error::Error>> {
                 return Err("You must run 'install' with sudo privileges to modify the system.".into());
             }
 
-            let package_path = PathBuf::from(package);
+            let pkg_name = package_path.to_string_lossy().to_string();
             
-            if package.ends_with(".tar.gz") && package_path.exists() {
+            if pkg_name.ends_with(".tar.gz") && package_path.exists() {
                 println!("Installing from local file: {:?}", package_path);
                 package::install_package(&package_path, &target_root)?;
             } else {
-                println!("Searching remote registry for: {}", package);
-                package::download_and_install_package(package, &target_root)?;
+                println!("Searching remote registry for: {}", pkg_name);
+                package::download_and_install_package(&pkg_name, &target_root)?;
             }
         }
         Commands::List => {
@@ -86,4 +86,6 @@ fn main() => Result<(), Box<dyn std::error::Error>> {
             package::login(token)?;
         }
     }
+
+    Ok(())
 }
