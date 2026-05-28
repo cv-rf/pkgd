@@ -832,6 +832,7 @@ dependencies = [
  "clap",
  "flate2",
  "hex",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
