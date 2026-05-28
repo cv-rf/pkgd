@@ -7,6 +7,9 @@ use std::path::PathBuf;
 #[command(name = "pkgd")]
 #[command(about = "A simple custom Linux package manager made in Rust", long_about = None)]
 struct Cli {
+    #[arg(long, default_value = "/")]
+    root: PathBuf,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -28,48 +31,59 @@ enum Commands {
     },
 }
 
-fn main() {
-    let cli = Cli::parse();
+#[cfg(unix)]
+fn is_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
 
-    let target_root = PathBuf::from("/tmp/pkgd_root");
+#[cfg(not(unix))]
+fn is_root() -> bool {
+    false
+}
+
+fn main() => Result<(), Box<dyn std::error::Error>> {
+    let cli = Cli::parse();
+    let target_root = cli.root;
 
     match &cli.command {
         Commands::Install { package_path } => {
-            println!("Installing package from: {:?}", package_path);
-            if package_path.extension().and_then(|s| s.to_str()) == Some("gz") && package_path.exists() {
+            if !is_root() && target_root == Path::new("/") {
+                return Err("You must run 'install' with sudo privileges to modify the system.".into());
+            }
+
+            let package_path = PathBuf::from(package);
+            
+            if package.ends_with(".tar.gz") && package_path.exists() {
                 println!("Installing from local file: {:?}", package_path);
-                if let Err(e) = package::install_package(package_path, &target_root) {
-                    eprintln!("Error during installation: {}", e);
-                }
+                package::install_package(&package_path, &target_root)?;
             } else {
-                let package_name = package_path.to_str().unwrap();
-                println!("Searching remote registry for: {}", package_name);
-                if let Err(e) = package::download_and_install_package(package_name, &target_root) {
-                    eprintln!("Registry Error: {}", e);
-                }
+                println!("Searching remote registry for: {}", package);
+                package::download_and_install_package(package, &target_root)?;
             }
         }
         Commands::List => {
             println!("Listing installed packages:");
-            if let Err(e) = package::list_packages(&target_root) {
-                eprintln!("Error listing packages: {}", e);
-            }
+            package::list_packages(&target_root)?;
         }
         Commands::Remove { package_name } => {
-            println!("Removing package: {}", package_name);
-            if let Err(e) = package::remove_package(package_name, &target_root) {
-                eprintln!("Error during removal: {}", e)
+            if !is_root() && target_root == Path::new("/") {
+                return Err("You must run 'remove' with sudo privileges to modify the system.".into());
             }
+
+            println!("Removing package: {}", package_name);
+            package::remove_package(package_name, &target_root)?;
         }
         Commands::Publish { source_dir } => {
-            if let Err(e) = package::publish_package(&source_dir) {
-                eprintln!("Publish Error: {}", e);
+            if is_root() {
+                return Err("Do not run 'publish' with sudo. It should be run as your normal user.".into());
             }
+            package::publish_package(source_dir)?;
         }
         Commands::Login { token } => {
-            if let Err(e) = package::login(token) {
-                eprintln!("Login Error: {}", e);
+            if is_root() {
+                return Err("Do not run 'login' with sudo. It will save credentials to the wrong user profile.".into());
             }
+            package::login(token)?;
         }
     }
 }

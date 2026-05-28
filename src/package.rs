@@ -94,7 +94,9 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
         let mut entry = entry?;
         let path = entry.path()?;
 
-        if path.to_str() == Some("manifest.json") {
+        let clean_path = path.strip_prefix(".").unwrap_or(&path);
+
+        if clean_path.to_str() == Some("manifest.json") {
             manifest = Some(serde_json::from_reader(&mut entry)?);
             break;
         }
@@ -117,8 +119,16 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
         let mut entry = entry?;
         let path = entry.path()?.to_path_buf();
 
-        if path.to_str() != Some("manifest.json") {
-            let dest_path = target_root.join(&path);
+        let clean_path = path.strip_prefix(".").unwrap_or(&path);
+
+        if clean_path.to_str() != Some("manifest.json") {
+            let mut safe_path = clean_path;
+
+            while let Ok(stripped) = safe_path.strip_prefix("/") {
+                safe_path = stripped;
+            }
+
+            let dest_path = target_root.join(save_path);
 
             if let Some(parent) = dest_path.parent() {
                 std::fs::create_dir_all(parent)?;
