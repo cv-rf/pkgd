@@ -128,7 +128,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
                 safe_path = stripped;
             }
 
-            let dest_path = target_root.join(save_path);
+            let dest_path = target_root.join(safe_path);
 
             if let Some(parent) = dest_path.parent() {
                 std::fs::create_dir_all(parent)?;
