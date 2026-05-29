@@ -8,7 +8,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use tar::Archive;
 
-const REGISTRY_URL: &str = "http://192.168.137.1:9999";
+const REGISTRY_URL: &str = "https://pkgd.atticl.com";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PackageManifest {
