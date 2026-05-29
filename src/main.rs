@@ -1,14 +1,16 @@
 mod package;
 
 use clap::{Parser, Subcommand};
+use directories::BaseDirs;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "pkgd")]
 #[command(about = "A simple custom Linux package manager made in Rust", long_about = None)]
 struct Cli {
-    #[arg(long, default_value = "/")]
-    root: PathBuf,
+    /// The root directory for installation (defaults to $HOME/.local)
+    #[arg(long)]
+    root: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Commands,
@@ -41,14 +43,22 @@ fn is_root() -> bool {
     false
 }
 
+fn get_default_root() -> PathBuf {
+    if let Some(base_dirs) = BaseDirs::new() {
+        base_dirs.home_dir().join(".local")
+    } else {
+        PathBuf::from("/")
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    let target_root = cli.root;
+    let target_root = cli.root.unwrap_or_else(get_default_root);
 
     match &cli.command {
         Commands::Install { package_path } => {
             if !is_root() && target_root == Path::new("/") {
-                return Err("You must run 'install' with sudo privileges to modify the system.".into());
+                return Err("You must run 'install' with sudo privileges to modify the system root.".into());
             }
 
             let pkg_name = package_path.to_string_lossy().to_string();
@@ -62,15 +72,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         Commands::List => {
-            println!("Listing installed packages:");
+            println!("Listing installed packages in: {:?}", target_root);
             package::list_packages(&target_root)?;
         }
         Commands::Remove { package_name } => {
             if !is_root() && target_root == Path::new("/") {
-                return Err("You must run 'remove' with sudo privileges to modify the system.".into());
+                return Err("You must run 'remove' with sudo privileges to modify the system root.".into());
             }
 
-            println!("Removing package: {}", package_name);
+            println!("Removing package: {} from {:?}", package_name, target_root);
             package::remove_package(package_name, &target_root)?;
         }
         Commands::Publish { source_dir } => {

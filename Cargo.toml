@@ -1,6 +1,6 @@
 [package]
 name = "pkgd"
-version = "1.5.5"
+version = "1.6.0"
 edition = "2024"
 
 [dependencies]
@@ -13,3 +13,4 @@ hex = "0.4"
 flate2 = "1.0"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json", "blocking", "multipart"] }
 libc = "0.2.186"
+directories = "6.0.0"

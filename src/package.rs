@@ -1,3 +1,4 @@
+use directories::ProjectDirs;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -23,6 +24,15 @@ pub struct PackageManifest {
 pub struct LocalPackageRecord {
     pub manifest: PackageManifest,
     pub files: Vec<String>,
+}
+
+pub fn get_db_dir(target_root: &Path) -> PathBuf {
+    if target_root == Path::new("/") {
+        PathBuf::from("/var/lib/pkgd/installed")
+    } else {
+        // If it's a user-local root, follow XDG-like structure: root/share/pkgd/installed
+        target_root.join("share/pkgd/installed")
+    }
 }
 
 pub fn download_and_install_package(
@@ -148,7 +158,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
         files: installed_files,
     };
 
-    let db_dir = target_root.join("var/lib/pkgd/installed");
+    let db_dir = get_db_dir(target_root);
     std::fs::create_dir_all(&db_dir)?;
 
     let db_file_path = db_dir.join(format!("{}.json", record.manifest.name));
@@ -160,7 +170,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
 }
 
 pub fn list_packages(target_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let db_dir = target_root.join("var/lib/pkgd/installed");
+    let db_dir = get_db_dir(target_root);
 
     if !db_dir.exists() {
         println!("No packages installed.");
@@ -189,7 +199,8 @@ pub fn list_packages(target_root: &Path) -> Result<(), Box<dyn std::error::Error
 }
 
 pub fn remove_package(package_name: &str, target_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let db_file_path = target_root.join(format!("var/lib/pkgd/installed/{}.json", package_name));
+    let db_dir = get_db_dir(target_root);
+    let db_file_path = db_dir.join(format!("{}.json", package_name));
 
     if !db_file_path.exists() {
         return Err(format!("Package '{}' is not installed.", package_name).into());
@@ -236,6 +247,12 @@ pub fn remove_package(package_name: &str, target_root: &Path) -> Result<(), Box<
 }
 
 fn get_credentials_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Some(proj_dirs) = ProjectDirs::from("com", "atticl", "pkgd") {
+        let config_dir = proj_dirs.config_dir();
+        return Ok(config_dir.join("credentials"));
+    }
+    
+    // Fallback to old behavior if directories crate fails
     let home = std::env::var("HOME").map_err(|_| "Could not find HOME directory. Are you on Linux/macOS?")?;
     Ok(Path::new(&home).join(".pkgd").join("credentials"))
 }
