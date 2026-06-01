@@ -4,6 +4,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,8 @@ pub struct PackageManifest {
     pub description: String,
     pub author: String,
     pub checksum: Option<String>,
+    #[serde(defualt)]
+    pub dependencies: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -39,16 +42,46 @@ pub fn download_and_install_package(
     package_name: &str,
     target_root: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut resolved = HashSet::new();
+    resolve_and_install(package_name, target_root, &mut resolved)
+}
+
+fn resolve_and_install(
+    package_name: &str,
+    target_root: &Path,
+    resolved: &mut HashSet<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if resolved.contains(package_name) {
+        return Ok(());
+    }
+
+    let db_dir = get_db_dir(target_root);
+    let db_file_path = db_dir.json(format!("{}.json", package_name));
+    if db_file_path.exists() {
+        println!("Dependency '{}' is already installed. Skipping.", package_name);
+        resolved.insert(package_name.to_string());
+        return Ok(());
+    }
+
     let api_url = format!("{}/api/packages/{}", REGISTRY_URL, package_name);
     println!("Fetching manifest from: {}", api_url);
 
-    let response = reqwest::blocking::get(&api_url)?;
+    let response = reqwest::blocking::get(&api_url);
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(format!("Package '{}' not found in remote registry.", package_name).into());
     }
 
     let manifest: PackageManifest = response.json()?;
     println!("Found remote package: {} ({})", manifest.name, manifest.version);
+
+    resolved.insert(package_name.to_string());
+
+    if let Some(desp) = &manifest.dependencies {
+        for dep in deps {
+            println!("Resolving dependency '{}' for pacakge '{}'...", dep, package_name);
+            resolve_and_install(dep, target_root, resolved)?;
+        }
+    }
 
     let tarball_filename = format!("{}-{}.tar.gz", manifest.name, manifest.version);
     let download_url = format!("{}/download/{}", REGISTRY_URL, tarball_filename);
@@ -60,15 +93,15 @@ pub fn download_and_install_package(
     }
 
     let tmp_dir = std::env::temp_dir();
-    let tmp_archive_path = tmp_dir.join(&tarball_filename);
+    let tmp_archive_path = tmp_dirjoin(&tarball_filename);
     let mut tmp_file = File::create(&tmp_archive_path)?;
 
     tarball_response.copy_to(&mut tmp_file)?;
 
     if let Some(expected_hash) = &manifest.checksum {
-        println!("Verifying SHA-256 checksum...");
+        println!("Verifying SHA-256 checksum for {}...", package_name);
         let tarball_bytes = fs::read(&tmp_archive_path)?;
-        
+
         let mut hasher = Sha256::new();
         hasher.update(&tarball_bytes);
         let actual_hash = hex::encode(hasher.finalize());
@@ -76,15 +109,15 @@ pub fn download_and_install_package(
         if actual_hash != *expected_hash {
             let _ = fs::remove_file(&tmp_archive_path);
             return Err(format!(
-                "SECURITY ALERT: Checksum mismatch!\nExpected: {}\nGot:      {}",
-                expected_hash, actual_hash
+                "SECURITY ALERT: Checksum mismatch for {}!\nExpected: {}\nGot:      {}",
+                package_name, expected_hash, actual_hash
             )
             .into());
         }
         println!("Checksum verified successfully.");
     }
 
-    println!("Download complete. Handing off to local installation pipeline...");
+    println!("Download complete for {}. Handing off to local installation pipeline...", package_name);
 
     install_package(&tmp_archive_path, target_root)?;
 

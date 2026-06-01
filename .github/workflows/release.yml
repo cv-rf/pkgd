@@ -6,8 +6,11 @@ on:
 
 jobs:
   build-and-release:
-    name: Build Linux Static Binary
+    name: Build Linux Binaries
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl]
     
     steps:
       - name: Checkout repository
@@ -16,22 +19,31 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-linux-musl
+          targets: ${{ matrix.target }}
 
       - name: Install musl-tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Build static binary
-        run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }}
         
       - name: Rename and compress binary
         run: |
-          mv target/x86_64-unknown-linux-musl/release/pkgd pkgd-linux-amd64
-          tar -czvf pkgd-linux-amd64.tar.gz pkgd-linux-amd64
+          SUFFIX=""
+          if [ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]; then
+            SUFFIX="-musl"
+          else
+            SUFFIX="-glibc"
+          fi
+          
+          mkdir -p dist
+          mv target/${{ matrix.target }}/release/pkgd pkgd-linux-amd64${SUFFIX}
+          tar -czvf pkgd-linux-amd64${SUFFIX}.tar.gz pkgd-linux-amd64${SUFFIX}
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: pkgd-linux-amd64.tar.gz
+          files: pkgd-linux-amd64*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
