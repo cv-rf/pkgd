@@ -183,48 +183,72 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
 
     let mut installed_files = Vec::new();
 
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_path_buf();
+    let extraction_result: Result<(), Box<dyn std::error::Error>> = (|| {
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path?.to_path_buf();
 
-        let clean_path = path.strip_prefix(".").unwrap_or(&path);
+            let clean_path = path.strip_prefix(".").unwrap_or(&path);
 
-        if clean_path.to_str() != Some("manifest.json") {
-            let mut safe_path = clean_path;
+            if clean_path.to_str() != Some("manifest.json") {
+                let mut safe_path = clean_path;
 
-            while let Ok(stripped) = safe_path.strip_prefix("/") {
-                safe_path = stripped;
-            }
+                while let Ok(stripped) = safe_path.strip_prefix("/") {
+                    safe_path = stripped;
+                }
 
-            let dest_path = target_root.join(safe_path);
+                let dest_path = target_root.join(safe_path);
 
-            if let Some(parent) = dest_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+                if let Some(parent) = dest_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
 
-            entry.unpack(&dest_path)?;
-            println!("Extracted: {:?}", dest_path);
+                entry.unpack(&dest_path)?;
+                println!("Extracted: {:?}", dest_path);
 
-            if let Some(path_str) = path.to_str() {
-                installed_files.push(path_str.to_string());
+                if let Some(path_str) = safe_path.to_str() {
+                    installed_files.push(path_str.to_string());
+                }
             }
         }
+        Ok(())
+    })();
+
+    if let Err(e) = extraction_result {
+        println!("Error during extraction: {}. Initiating rollback...", e);
+
+        for file_path_str in installed_files.iter().rev() {
+            let full_path = target_root.join(file_path_str);
+
+            if full_path.exists() && full_path.is_file() {
+                let _ fs::remove_file(&full_path);
+                println!("Rolled back file: {:?}", full_path);
+            }
+
+            if let Some(mut parent) = full_path.parent() {
+                while parent != target_root {
+                    if parent.exists() && fs::read_dir(parent).map(|mut d| d.next().is_none()).unwrap_or(false) {
+                        let _ = fs::remove_dir(parent);
+                        println!("Rolled back empty directory: {:?}", parent);
+                    } else {
+                        break;
+                    }
+                    if let Some(p) = parent.parent() {
+                        parent = p;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return Err(format!("Installation failed and was rolled back safely: {}", e).into());
     }
 
     let record = LocalPackageRecord {
         manifest: manifest.clone(),
         files: installed_files,
     };
-
-    let db_dir = get_db_dir(target_root);
-    std::fs::create_dir_all(&db_dir)?;
-
-    let db_file_path = db_dir.join(format!("{}.json", record.manifest.name));
-    let db_file = File::create(db_file_path)?;
-    serde_json::to_writer_pretty(db_file, &record)?;
-
-    println!("Successfully registered {} in local database.", record.manifest.name);
-    Ok(())
 }
 
 pub fn list_packages(target_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
