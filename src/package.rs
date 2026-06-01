@@ -296,8 +296,7 @@ pub fn update_packages(
     }
 
     for pkg_name in updates_available {
-        println!("
-        n--- Updating {} ---", pkg_name);
+        println!("\n--- Updating {} ---", pkg_name);
 
         remove_package(&pkg_name, target_root)?;
 
