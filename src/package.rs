@@ -19,7 +19,7 @@ pub struct PackageManifest {
     pub description: String,
     pub author: String,
     pub checksum: Option<String>,
-    #[serde(defualt)]
+    #[serde(default)]
     pub dependencies: Option<Vec<String>>,
 }
 
@@ -56,7 +56,7 @@ fn resolve_and_install(
     }
 
     let db_dir = get_db_dir(target_root);
-    let db_file_path = db_dir.json(format!("{}.json", package_name));
+    let db_file_path = db_dir.join(format!("{}.json", package_name));
     if db_file_path.exists() {
         println!("Dependency '{}' is already installed. Skipping.", package_name);
         resolved.insert(package_name.to_string());
@@ -66,7 +66,7 @@ fn resolve_and_install(
     let api_url = format!("{}/api/packages/{}", REGISTRY_URL, package_name);
     println!("Fetching manifest from: {}", api_url);
 
-    let response = reqwest::blocking::get(&api_url);
+    let response = reqwest::blocking::get(&api_url)?;
     if response.status() == reqwest::StatusCode::NOT_FOUND {
         return Err(format!("Package '{}' not found in remote registry.", package_name).into());
     }
@@ -76,7 +76,7 @@ fn resolve_and_install(
 
     resolved.insert(package_name.to_string());
 
-    if let Some(desp) = &manifest.dependencies {
+    if let Some(deps) = &manifest.dependencies {
         for dep in deps {
             println!("Resolving dependency '{}' for pacakge '{}'...", dep, package_name);
             resolve_and_install(dep, target_root, resolved)?;
@@ -93,7 +93,7 @@ fn resolve_and_install(
     }
 
     let tmp_dir = std::env::temp_dir();
-    let tmp_archive_path = tmp_dirjoin(&tarball_filename);
+    let tmp_archive_path = tmp_dir.join(&tarball_filename);
     let mut tmp_file = File::create(&tmp_archive_path)?;
 
     tarball_response.copy_to(&mut tmp_file)?;
