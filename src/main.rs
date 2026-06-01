@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "pkgd")]
+#[command(version)]
 #[command(about = "A simple custom Linux package manager made in Rust", long_about = None)]
 struct Cli {
     /// The root directory for installation (defaults to $HOME/.local)
