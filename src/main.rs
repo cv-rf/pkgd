@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("You must run 'update' with sudo privileges to modify the system root.".into());
             }
 
-            if let Some(name) == package_name {
+            if let Some(name) = package_name {
                 println!("Checking for updates for package: {} in {:?}", name, target_root);
             } else {
                 println!("Checking for updates for all installed packages in {:?}", target_root);

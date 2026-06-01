@@ -295,7 +295,7 @@ pub fn update_packages(
         return Ok(());
     }
 
-    for pkg_name in update_packages {
+    for pkg_name in updates_available {
         println!("
         n--- Updating {} ---", pkg_name);
 
