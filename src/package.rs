@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::os::unix::io::AsRawFd;
 use tar::Archive;
 
 const REGISTRY_URL: &str = "https://pkgd.atticl.com";
@@ -36,6 +37,30 @@ pub fn get_db_dir(target_root: &Path) -> PathBuf {
         // If it's a user-local root, follow XDG-like structure: root/share/pkgd/installed
         target_root.join("share/pkgd/installed")
     }
+}
+
+pub fn acquire_lock(target_root: &Path) -> Result<File, Box<dyn std::error::Error>> {
+    let db_dir = get_db_dir(target_root);
+    std::fs::create_dir_all(&db_dir);
+
+    let lock_path = db_dir.join(".pkgd.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)?;
+
+    println!("Acquiring exclusive database lock...");
+
+    unsafe {
+        let fd = file.as_raw_fd();
+
+        if libc::flock(fd, libc::LOCK_EX) != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+
+    Ok(file)
 }
 
 pub fn download_and_install_package(

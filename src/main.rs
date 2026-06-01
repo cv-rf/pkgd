@@ -65,6 +65,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("You must run 'install' with sudo privileges to modify the system root.".into());
             }
 
+            let _lock = package::acquire_lock(&target_root)?;
+
             let pkg_name = package_path.to_string_lossy().to_string();
             
             if pkg_name.ends_with(".tar.gz") && package_path.exists() {
@@ -84,6 +86,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("You must run 'update' with sudo privileges to modify the system root.".into());
             }
 
+            let _lock = package::acquire_lock(&target_root);
+
             if let Some(name) = package_name {
                 println!("Checking for updates for package: {} in {:?}", name, target_root);
             } else {
@@ -96,6 +100,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if !is_root() && target_root == Path::new("/") {
                 return Err("You must run 'remove' with sudo privileges to modify the system root.".into());
             }
+
+            let _lock = package::acquire_lock(&target_root);
 
             println!("Removing package: {} from {:?}", package_name, target_root);
             package::remove_package(package_name, &target_root)?;
