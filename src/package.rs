@@ -41,7 +41,7 @@ pub fn get_db_dir(target_root: &Path) -> PathBuf {
 
 pub fn acquire_lock(target_root: &Path) -> Result<File, Box<dyn std::error::Error>> {
     let db_dir = get_db_dir(target_root);
-    std::fs::create_dir_all(&db_dir);
+    let _ = std::fs::create_dir_all(&db_dir);
 
     let lock_path = db_dir.join(".pkgd.lock");
     let file = std::fs::OpenOptions::new()
