@@ -249,6 +249,16 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
         manifest: manifest.clone(),
         files: installed_files,
     };
+    
+    let db_dir = get_db_dir(target_root);
+    std::fs::create_dir_all(&db_dir)?;
+
+    let db_file_path = db_dir.join(format!("{}.json", record.manifest.name));
+    let db_file = File::create(db_file_path)?;
+    serde_json::to_writer_pretty(db_file, &record)?;
+
+    println!("Successfully registered {} in local database.", record.manifest.name);
+    Ok(())
 }
 
 pub fn list_packages(target_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
