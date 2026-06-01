@@ -186,7 +186,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
     let extraction_result: Result<(), Box<dyn std::error::Error>> = (|| {
         for entry in archive.entries()? {
             let mut entry = entry?;
-            let path = entry.path?.to_path_buf();
+            let path = entry.path()?.to_path_buf();
 
             let clean_path = path.strip_prefix(".").unwrap_or(&path);
 
@@ -221,7 +221,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
             let full_path = target_root.join(file_path_str);
 
             if full_path.exists() && full_path.is_file() {
-                let _ fs::remove_file(&full_path);
+                let _ = fs::remove_file(&full_path);
                 println!("Rolled back file: {:?}", full_path);
             }
 
