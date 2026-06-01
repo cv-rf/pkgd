@@ -25,6 +25,9 @@ enum Commands {
         package_name: String,
     },
     List,
+    Update {
+        package_name: Option<String>,
+    },
     Publish {
         source_dir: PathBuf,
     },
@@ -74,6 +77,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::List => {
             println!("Listing installed packages in: {:?}", target_root);
             package::list_packages(&target_root)?;
+        }
+        Commands::Update { package_name} => {
+            if !is_root() && target_root == Path::new("/") {
+                return Err("You must run 'update' with sudo privileges to modify the system root.".into());
+            }
+
+            if let Some(name) == package_name {
+                println!("Checking for updates for package: {} in {:?}", name, target_root);
+            } else {
+                println!("Checking for updates for all installed packages in {:?}", target_root);
+            }
+
+            package::update_packages(package_name.as_deref(), &target_root)?;
         }
         Commands::Remove { package_name } => {
             if !is_root() && target_root == Path::new("/") {
