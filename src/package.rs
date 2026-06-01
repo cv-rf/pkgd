@@ -251,7 +251,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
     };
     
     let db_dir = get_db_dir(target_root);
-    std::fs::create_dir_all(&db_dir)?;
+    let _ = std::fs::create_dir_all(&db_dir)?;
 
     let db_file_path = db_dir.join(format!("{}.json", record.manifest.name));
     let db_file = File::create(db_file_path)?;
