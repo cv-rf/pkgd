@@ -82,10 +82,16 @@ pub fn download_and_install_package(
 }
 
 fn resolve_and_install(
-    package_name: &str,
+    package_identifier: &str,
     target_root: &Path,
     resolved: &mut HashSet<String>,
 ) -> Result<()> {
+    let (package_name, requested_version) = if let Some(idx) = package_identifier.find('@') {
+        (&package_identifier[..idx], Some(&package_identifier[idx + 1..]))
+    } else {
+        (package_identifier, None)
+    };
+
     if resolved.contains(package_name) {
         return Ok(());
     }
@@ -93,23 +99,43 @@ fn resolve_and_install(
     let db_dir = get_db_dir(target_root);
     let db_file_path = db_dir.join(format!("{}.json", package_name));
     if db_file_path.exists() {
-        println!("Dependency '{}' is already installed. Skipping.", package_name);
-        resolved.insert(package_name.to_string());
-        return Ok(());
+        let file = File::open(&db_file_path)?;
+        let local_record: LocalPackageRecord = serde_json::from_reader(file)?;
+
+        if let Some(req_ver) = requested_version {
+            if local_record.manifest.version == req_ver {
+                println!("Dependency '{}@{}' is already installed. Skipping.", package_name, req_ver);
+                resolved.insert(package_name.to_string());
+                return Ok(());
+            } else {
+                println!("Different version of '{}' installed ({}). Replacing with requested version {}...",
+                        package_name, local_record.manifest.version, req_ver);
+                remove_package(package_name, target_root);
+            }
+        } else {
+            println!("Dependency '{}' is already installed. Skipping.", package_name);
+            resolved.insert(package_name.to_string());
+            return Ok(());
+        }
     }
 
-    let api_url = format!("{}/api/packages/{}", REGISTRY_URL, package_name);
+    let api_url = if let Some(req_ver) = requested_version {
+        format!("{}/api/packages/{}/{}", REGISTRY_URL, package_name, req_ver)
+    } else {
+        format!("{}/api/packages/{}", REGISTRY_URL, package_name)
+    };
+
     println!("Fetching manifest from: {}", api_url);
 
     let response = reqwest::blocking::get(&api_url)
-        .with_context(|| format!("Failed to connect to registry to fetch manifest for {}", package_name))?;
+        .with_context(|| format!("Failed to connect to registry to fetch manifest for {}", package_identifier))?;
     
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        bail!("Package '{}' not found in remote registry.", package_name);
+        bail!("Package '{}' not found in remote registry.", package_identifier);
     }
 
     let manifest: PackageManifest = response.json()
-        .with_context(|| format!("Failed to parse manifest JSON for {}", package_name))?;
+        .with_context(|| format!("Failed to parse manifest JSON for {}", package_identifier))?;
 
     println!("Found remote package: {} ({})", manifest.name, manifest.version);
 
