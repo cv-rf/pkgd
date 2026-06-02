@@ -13,7 +13,7 @@ use std::os::unix::io::AsRawFd;
 use tar::Archive;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey, Signer, SigningKey};
 use std::convert::TryInto;
-use rand::rngs::OsRng;
+use rand_core::OsRng;
 
 const REGISTRY_URL: &str = "https://pkgd.atticl.com";
 
