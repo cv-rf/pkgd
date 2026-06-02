@@ -110,7 +110,7 @@ fn resolve_and_install(
             } else {
                 println!("Different version of '{}' installed ({}). Replacing with requested version {}...",
                         package_name, local_record.manifest.version, req_ver);
-                remove_package(package_name, target_root);
+                let _ = remove_package(package_name, target_root);
             }
         } else {
             println!("Dependency '{}' is already installed. Skipping.", package_name);
