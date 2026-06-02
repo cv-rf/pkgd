@@ -36,8 +36,15 @@ pub struct LocalPackageRecord {
 }
 
 #[derive(Deserialize)]
+struct KeyInfo {
+    name: String,
+    key: String,
+}
+
+#[derive(Deserialize)]
 struct AuthorKeysResponse {
-    keys: Vec<String>,
+    pub author: String,
+    pub keys: Vec<KeyInfo>,
 }
 
 pub fn get_db_dir(target_root: &Path) -> PathBuf {
@@ -218,26 +225,36 @@ fn resolve_and_install(
                 let keys_response = reqwest::blocking::get(&keys_api_url)?;
 
                 if keys_response.status().is_success() {
-                    let keys_data: AuthorKeysResponse = keys_response.json()?;
-                    let _ = fs::create_dir_all(&author_keys_dir)?;
+                    let raw_text = keys_response.text()?;
+                    
+                    match serde_json::from_str::<AuthorKeysResponse>(&raw_text) {
+                        Ok(keys_data) => {
+                            let _ = fs::create_dir_all(&author_keys_dir)?;
 
-                    for (i, pub_hex) in keys_data.keys.iter().enumerate() {
-                        if let Ok(pub_bytes) = hex::decode(pub_hex.trim()) {
-                            if let Ok(pub_bytes_arr) = pub_bytes.try_into() {
-                                if let Ok(verifying_key) = VerifyingKey::from_bytes(&pub_bytes_arr) {
-                                    if verifying_key.verify(&tarball_bytes, &signature).is_ok() {
-                                        verified = true;
-                                        println!("Signature verified against newly fetched key!");
-                                    }
-                                    
-                                    let key_filename = format!("key_{}.pub", i);
-                                    let key_path = author_keys_dir.join(key_filename);
-                                    if !key_path.exists() {
-                                        fs::write(&key_path, pub_hex.trim())?;
-                                        println!("Saved new trusted key to {:?}", key_path);
+                            for key_info in keys_data.keys.iter() {
+                                if let Ok(pub_bytes) = hex::decode(key_info.key.trim()) {
+                                    if let Ok(pub_bytes_arr) = pub_bytes.try_into() {
+                                        if let Ok(verifying_key) = VerifyingKey::from_bytes(&pub_bytes_arr) {
+                                            if verifying_key.verify(&tarball_bytes, &signature).is_ok() {
+                                                verified = true;
+                                                println!("Signature verified against newly fetched key ('{}')!", key_info.name);
+                                            }
+                                            
+                                            let safe_name = key_info.name.replace(|c: char| !c.is_alphanumeric(), "_");
+                                            let key_filename = format!("{}.pub", safe_name);
+                                            let key_path = author_keys_dir.join(key_filename);
+                                            if !key_path.exists() {
+                                                fs::write(&key_path, key_info.key.trim())?;
+                                                println!("Saved new trusted key to {:?}", key_path);
+                                            }
+                                        }
                                     }
                                 }
                             }
+                        }
+                        Err(e) => {
+                            println!("Warning: Registry returned invalid JSON. ({})", e);
+                            println!("Raw server response: {}", raw_text);
                         }
                     }
                 } else {
