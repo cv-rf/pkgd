@@ -60,6 +60,15 @@ pub fn get_db_dir(target_root: &Path) -> PathBuf {
     }
 }
 
+fn parse_identifier(id: &str) -> (&str, Option<&str>) {
+    if let Some(idx) = id.rfind('@') {
+        if idx > 0 {
+            return (&id[..idx], Some(&id[idx + 1..]));
+        }
+    }
+    (id, None)
+}
+
 pub fn acquire_lock(target_root: &Path) -> Result<File> {
     let db_dir = get_db_dir(target_root);
     let _ = std::fs::create_dir_all(&db_dir);
@@ -84,6 +93,35 @@ pub fn acquire_lock(target_root: &Path) -> Result<File> {
     Ok(file)
 }
 
+fn get_all_installed_records(target_root: &Path) -> Result<Vec<LocalPackageRecord>> {
+    let mut records = Vec::new();
+    let db_dir = get_db_dir(target_root);
+    if !db_dir.exists() { return Ok(records); }
+
+    let mut dirs_to_check = vec![db_dir];
+
+    while let Some(dir) = dirs_to_check.pop() {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_dir() {
+                dirs_to_check.push(path);
+            } else if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+                if path.file_name().and_then(|s| s.to_str()) == Some(".pkgd.lock") {
+                    continue;
+                }
+                if let Ok(file) = File::open(&path) {
+                    if let Ok(record) = serde_json::from_reader::<_, LocalPackageRecord>(file) {
+                        records.push(record);
+                    }
+                }
+            }
+        }
+    }
+    Ok(records)
+}
+
 pub fn download_and_install_package(
     package_name: &str,
     target_root: &Path,
@@ -98,11 +136,7 @@ fn resolve_and_install(
     is_dependency: bool,
     resolved: &mut HashSet<String>,
 ) -> Result<()> {
-    let (package_name, requested_version) = if let Some(idx) = package_identifier.find('@') {
-        (&package_identifier[..idx], Some(&package_identifier[idx + 1..]))
-    } else {
-        (package_identifier, None)
-    };
+    let (package_name, requested_version) = parse_identifier(package_identifier);
 
     if resolved.contains(package_name) {
         return Ok(());
@@ -110,6 +144,11 @@ fn resolve_and_install(
 
     let db_dir = get_db_dir(target_root);
     let db_file_path = db_dir.join(format!("{}.json", package_name));
+
+    if let Some(parent) = db_file_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
     if db_file_path.exists() {
         let file = File::open(&db_file_path)?;
         let local_record: LocalPackageRecord = serde_json::from_reader(file)?;
@@ -131,10 +170,12 @@ fn resolve_and_install(
         }
     }
 
+    let safe_name = urlencoding::encode(package_name);
+
     let api_url = if let Some(req_ver) = requested_version {
-        format!("{}/api/packages/{}/{}", REGISTRY_URL, package_name, req_ver)
+        format!("{}/api/packages/{}/{}", REGISTRY_URL, safe_name, req_ver)
     } else {
-        format!("{}/api/packages/{}", REGISTRY_URL, package_name)
+        format!("{}/api/packages/{}", REGISTRY_URL, safe_name)
     };
 
     println!("Fetching manifest from: {}", api_url);
@@ -423,9 +464,12 @@ pub fn install_package(archive_path: &Path, target_root: &Path, installed_as_dep
     };
     
     let db_dir = get_db_dir(target_root);
-    let _ = std::fs::create_dir_all(&db_dir)?;
-
     let db_file_path = db_dir.join(format!("{}.json", record.manifest.name));
+
+    if let Some(parent) = db_file_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
     let db_file = File::create(db_file_path)?;
     serde_json::to_writer_pretty(db_file, &record)?;
 
