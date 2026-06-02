@@ -13,7 +13,6 @@ use std::os::unix::io::AsRawFd;
 use tar::Archive;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey, Signer, SigningKey};
 use std::convert::TryInto;
-use rand_core::OsRng;
 
 const REGISTRY_URL: &str = "https://pkgd.atticl.com";
 
@@ -631,7 +630,7 @@ pub fn generate_keys() -> Result<()> {
     }
 
     print!("Generating new Ed25519 keypair...");
-    let mut csprng = OsRng;
+    let mut csprng = rand::thread_rng();
     let signing_key = SigningKey::generate(&mut csprng);
     let veryfing_key = VerifyingKey::from(&signing_key);
 
