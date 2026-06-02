@@ -13,6 +13,8 @@ use std::os::unix::io::AsRawFd;
 use tar::Archive;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey, Signer, SigningKey};
 use std::convert::TryInto;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::io;
 
 const REGISTRY_URL: &str = "https://pkgd.atticl.com";
 
@@ -166,11 +168,30 @@ fn resolve_and_install(
         bail!("Failed to download tarball from registry server. Status: {}", tarball_response.status());
     }
 
+    let total_size = tarball_response
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|ct_len| ct_len.to_str().ok())
+        .and_then(|ct_len| ct_len.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let pb = ProgressBar::new(total_size);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})"
+        )
+        .unwrap()
+        .progress_chars("#>-")
+    );
+    pb.set_message(format!("Downloading {}", package_name));
+
     let tmp_dir = std::env::temp_dir();
     let tmp_archive_path = tmp_dir.join(&tarball_filename);
     let mut tmp_file = File::create(&tmp_archive_path)?;
 
-    tarball_response.copy_to(&mut tmp_file)?;
+    let mut source = pb.wrap_read(tarball_response);
+
+    io::copy(&mut source, &mut tmp_file)?;
 
     if let Some(expected_hash) = &manifest.checksum {
         println!("Verifying SHA-256 checksum for {}...", package_name);

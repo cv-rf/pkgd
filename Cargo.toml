@@ -17,3 +17,4 @@ libc = "0.2.186"
 directories = "6.0.0"
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
 rand = "0.8"
+indicatif = "0.17"
