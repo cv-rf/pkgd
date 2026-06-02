@@ -1,14 +1,18 @@
+use anyhow::{Result, Context, bail};
+use directories::ProjectDirs;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+use std::os::unix::io::AsRawFd;
 use tar::Archive;
 
-const REGISTRY_URL: &str = "http://192.168.137.1:9999";
+const REGISTRY_URL: &str = "https://pkgd.atticl.com";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PackageManifest {
@@ -17,6 +21,8 @@ pub struct PackageManifest {
     pub description: String,
     pub author: String,
     pub checksum: Option<String>,
+    #[serde(default)]
+    pub dependencies: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -25,28 +31,97 @@ pub struct LocalPackageRecord {
     pub files: Vec<String>,
 }
 
+pub fn get_db_dir(target_root: &Path) -> PathBuf {
+    if target_root == Path::new("/") {
+        PathBuf::from("/var/lib/pkgd/installed")
+    } else {
+        // If it's a user-local root, follow XDG-like structure: root/share/pkgd/installed
+        target_root.join("share/pkgd/installed")
+    }
+}
+
+pub fn acquire_lock(target_root: &Path) -> Result<File> {
+    let db_dir = get_db_dir(target_root);
+    let _ = std::fs::create_dir_all(&db_dir);
+
+    let lock_path = db_dir.join(".pkgd.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&lock_path)?;
+
+    println!("Acquiring exclusive database lock...");
+
+    unsafe {
+        let fd = file.as_raw_fd();
+
+        if libc::flock(fd, libc::LOCK_EX) != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
+
+    Ok(file)
+}
+
 pub fn download_and_install_package(
     package_name: &str,
     target_root: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<()> {
+    let mut resolved = HashSet::new();
+    resolve_and_install(package_name, target_root, &mut resolved)
+}
+
+fn resolve_and_install(
+    package_name: &str,
+    target_root: &Path,
+    resolved: &mut HashSet<String>,
+) -> Result<()> {
+    if resolved.contains(package_name) {
+        return Ok(());
+    }
+
+    let db_dir = get_db_dir(target_root);
+    let db_file_path = db_dir.join(format!("{}.json", package_name));
+    if db_file_path.exists() {
+        println!("Dependency '{}' is already installed. Skipping.", package_name);
+        resolved.insert(package_name.to_string());
+        return Ok(());
+    }
+
     let api_url = format!("{}/api/packages/{}", REGISTRY_URL, package_name);
     println!("Fetching manifest from: {}", api_url);
 
-    let response = reqwest::blocking::get(&api_url)?;
+    let response = reqwest::blocking::get(&api_url)
+        .with_context(|| format!("Failed to connect to registry to fetch manifest for {}", package_name))?;
+    
     if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Err(format!("Package '{}' not found in remote registry.", package_name).into());
+        bail!("Package '{}' not found in remote registry.", package_name);
     }
 
-    let manifest: PackageManifest = response.json()?;
+    let manifest: PackageManifest = response.json()
+        .with_context(|| format!("Failed to parse manifest JSON for {}", package_name))?;
+
     println!("Found remote package: {} ({})", manifest.name, manifest.version);
+
+    resolved.insert(package_name.to_string());
+
+    if let Some(deps) = &manifest.dependencies {
+        for dep in deps {
+            println!("Resolving dependency '{}' for package '{}'...", dep, package_name);
+            resolve_and_install(dep, target_root, resolved)?;
+        }
+    }
 
     let tarball_filename = format!("{}-{}.tar.gz", manifest.name, manifest.version);
     let download_url = format!("{}/download/{}", REGISTRY_URL, tarball_filename);
     println!("Downloading tarball from: {}", download_url);
 
-    let mut tarball_response = reqwest::blocking::get(&download_url)?;
+    let mut tarball_response = reqwest::blocking::get(&download_url)
+        .with_context(|| format!("Failed to download tarball for {}", package_name))?;
+        
     if !tarball_response.status().is_success() {
-        return Err("Failed to download tarball from registry server.".into());
+        bail!("Failed to download tarball from registry server. Status: {}", tarball_response.status());
     }
 
     let tmp_dir = std::env::temp_dir();
@@ -56,25 +131,24 @@ pub fn download_and_install_package(
     tarball_response.copy_to(&mut tmp_file)?;
 
     if let Some(expected_hash) = &manifest.checksum {
-        println!("Verifying SHA-256 checksum...");
+        println!("Verifying SHA-256 checksum for {}...", package_name);
         let tarball_bytes = fs::read(&tmp_archive_path)?;
-        
+
         let mut hasher = Sha256::new();
         hasher.update(&tarball_bytes);
         let actual_hash = hex::encode(hasher.finalize());
 
         if actual_hash != *expected_hash {
             let _ = fs::remove_file(&tmp_archive_path);
-            return Err(format!(
-                "SECURITY ALERT: Checksum mismatch!\nExpected: {}\nGot:      {}",
-                expected_hash, actual_hash
-            )
-            .into());
+            bail!(
+                "SECURITY ALERT: Checksum mismatch for {}!\nExpected: {}\nGot:      {}",
+                package_name, expected_hash, actual_hash
+            );
         }
         println!("Checksum verified successfully.");
     }
 
-    println!("Download complete. Handing off to local installation pipeline...");
+    println!("Download complete for {}. Handing off to local installation pipeline...", package_name);
 
     install_package(&tmp_archive_path, target_root)?;
 
@@ -83,7 +157,7 @@ pub fn download_and_install_package(
     Ok(())
 }
 
-pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<()> {
     let file = File::open(archive_path)?;
     let tar_gz = GzDecoder::new(file);
     let mut archive = Archive::new(tar_gz);
@@ -94,7 +168,9 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
         let mut entry = entry?;
         let path = entry.path()?;
 
-        if path.to_str() == Some("manifest.json") {
+        let clean_path = path.strip_prefix(".").unwrap_or(&path);
+
+        if clean_path.to_str() == Some("manifest.json") {
             manifest = Some(serde_json::from_reader(&mut entry)?);
             break;
         }
@@ -102,7 +178,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
 
     let manifest = match manifest {
         Some(m) => m,
-        None => return Err("Failed to find manifest.json in package archive".into()),
+        None => bail!("Failed to find manifest.json in package archive"),
     };
 
     println!("Extracting package: {} ({})", manifest.name, manifest.version);
@@ -113,33 +189,75 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
 
     let mut installed_files = Vec::new();
 
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let path = entry.path()?.to_path_buf();
+    let extraction_result: Result<()> = (|| {
+        for entry in archive.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_path_buf();
 
-        if path.to_str() != Some("manifest.json") {
-            let dest_path = target_root.join(&path);
+            let clean_path = path.strip_prefix(".").unwrap_or(&path);
 
-            if let Some(parent) = dest_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+            if clean_path.to_str() != Some("manifest.json") {
+                let mut safe_path = clean_path;
 
-            entry.unpack(&dest_path)?;
-            println!("Extracted: {:?}", dest_path);
+                while let Ok(stripped) = safe_path.strip_prefix("/") {
+                    safe_path = stripped;
+                }
 
-            if let Some(path_str) = path.to_str() {
-                installed_files.push(path_str.to_string());
+                let dest_path = target_root.join(safe_path);
+
+                if let Some(parent) = dest_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                entry.unpack(&dest_path)?;
+                println!("Extracted: {:?}", dest_path);
+
+                if let Some(path_str) = safe_path.to_str() {
+                    installed_files.push(path_str.to_string());
+                }
             }
         }
+        Ok(())
+    })();
+
+    if let Err(e) = extraction_result {
+        println!("Error during extraction: {}. Initiating rollback...", e);
+
+        for file_path_str in installed_files.iter().rev() {
+            let full_path = target_root.join(file_path_str);
+
+            if full_path.exists() && full_path.is_file() {
+                let _ = fs::remove_file(&full_path);
+                println!("Rolled back file: {:?}", full_path);
+            }
+
+            if let Some(mut parent) = full_path.parent() {
+                while parent != target_root {
+                    if parent.exists() && fs::read_dir(parent).map(|mut d| d.next().is_none()).unwrap_or(false) {
+                        let _ = fs::remove_dir(parent);
+                        println!("Rolled back empty directory: {:?}", parent);
+                    } else {
+                        break;
+                    }
+                    if let Some(p) = parent.parent() {
+                        parent = p;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        bail!("Installation failed and was rolled back safely: {}", e);
     }
 
     let record = LocalPackageRecord {
         manifest: manifest.clone(),
         files: installed_files,
     };
-
-    let db_dir = target_root.join("var/lib/pkgd/installed");
-    std::fs::create_dir_all(&db_dir)?;
+    
+    let db_dir = get_db_dir(target_root);
+    let _ = std::fs::create_dir_all(&db_dir)?;
 
     let db_file_path = db_dir.join(format!("{}.json", record.manifest.name));
     let db_file = File::create(db_file_path)?;
@@ -149,8 +267,8 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<(), Bo
     Ok(())
 }
 
-pub fn list_packages(target_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let db_dir = target_root.join("var/lib/pkgd/installed");
+pub fn list_packages(target_root: &Path) -> Result<()> {
+    let db_dir = get_db_dir(target_root);
 
     if !db_dir.exists() {
         println!("No packages installed.");
@@ -178,11 +296,88 @@ pub fn list_packages(target_root: &Path) -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-pub fn remove_package(package_name: &str, target_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let db_file_path = target_root.join(format!("var/lib/pkgd/installed/{}.json", package_name));
+pub fn update_packages(
+    package_name: Option<&str>,
+    target_root: &Path,
+) -> Result<()> {
+    let db_dir = get_db_dir(target_root);
+
+    if !db_dir.exists() {
+        println!("No packages installed.");
+        return Ok(());
+    }
+
+    let mut packages_to_check = Vec::new();
+
+    if let Some(name) = package_name {
+        let db_file_path = db_dir.join(format!("{}.json", name));
+        if !db_file_path.exists() {
+            bail!("Package '{}' is not installed.", name);
+        }
+        packages_to_check.push(name.to_string());
+    } else {
+        for entry in fs::read_dir(&db_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+                if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                    packages_to_check.push(name.to_string());
+                }   
+            }
+        }
+    }
+
+    let mut updates_available = Vec::new();
+
+    for pkg_name in packages_to_check {
+        let db_file_path = db_dir.join(format!("{}.json", &pkg_name));
+        let file = File::open(&db_file_path)?;
+        let local_record: LocalPackageRecord = serde_json::from_reader(file)?;
+
+        let api_url = format!("{}/api/packages/{}", REGISTRY_URL, pkg_name);
+
+        let response = reqwest::blocking::get(&api_url)?;
+        if response.status() == reqwest::StatusCode::OK {
+            let remote_manifest: PackageManifest = response.json()?;
+
+            if remote_manifest.version != local_record.manifest.version {
+                println!(
+                    "Update available for {}: {} -> {}",
+                    pkg_name, local_record.manifest.version, remote_manifest.version
+                );
+                updates_available.push(pkg_name);
+            } else {
+                println!("{} is up to date ({}).", pkg_name, local_record.manifest.version);
+            }
+        } else {
+            println!("Warning: Could not check updates for {} (server returned {})", pkg_name, response.status());
+        }
+    }
+
+    if updates_available.is_empty() {
+        println!("Everything is up to date!");
+        return Ok(());
+    }
+
+    for pkg_name in updates_available {
+        println!("\n--- Updating {} ---", pkg_name);
+
+        remove_package(&pkg_name, target_root)?;
+        download_and_install_package(&pkg_name, target_root)?;
+
+        println!("Successfully updated: {}!", pkg_name);
+    }
+
+    Ok(())
+}
+
+pub fn remove_package(package_name: &str, target_root: &Path) -> Result<()> {
+    let db_dir = get_db_dir(target_root);
+    let db_file_path = db_dir.join(format!("{}.json", package_name));
 
     if !db_file_path.exists() {
-        return Err(format!("Package '{}' is not installed.", package_name).into());
+        bail!("Package '{}' is not installed.", package_name);
     }
 
     let file = File::open(&db_file_path)?;
@@ -225,12 +420,17 @@ pub fn remove_package(package_name: &str, target_root: &Path) -> Result<(), Box<
     Ok(())
 }
 
-fn get_credentials_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let home = std::env::var("HOME").map_err(|_| "Could not find HOME directory. Are you on Linux/macOS?")?;
+fn get_credentials_path() -> Result<PathBuf> {
+    if let Some(proj_dirs) = ProjectDirs::from("com", "atticl", "pkgd") {
+        let config_dir = proj_dirs.config_dir();
+        return Ok(config_dir.join("credentials"));
+    }
+    
+    let home = std::env::var("HOME").context("Could not find HOME directory. Are you on Linux/macOS?")?;
     Ok(Path::new(&home).join(".pkgd").join("credentials"))
 }
 
-fn get_api_token() -> Result<String, Box<dyn std::error::Error>> {
+fn get_api_token() -> Result<String> {
     if let Ok(token) = std::env::var("PKGD_API_KEY") {
         return Ok(token);
     }
@@ -241,15 +441,15 @@ fn get_api_token() -> Result<String, Box<dyn std::error::Error>> {
         return Ok(token.trim().to_string());
     }
 
-    Err("Not logged in. Please run `pkgd login <token>` or set the PKGD_API_KEY environment variable.".into())
+    bail!("Not logged in. Please run `pkgd login <token>` or set the PKGD_API_KEY environment variable.");
 }
 
-pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+pub fn publish_package(source_dir: &Path) -> Result<()> {
     let api_key = get_api_token()?;
 
     let manifest_path = source_dir.join("manifest.json");
     if !manifest_path.exists() {
-        return Err("manifest.json not found in the source directory.".into());
+        bail!("manifest.json not found in the source directory.");
     }
 
     let manifest_str = fs::read_to_string(&manifest_path)?;
@@ -305,7 +505,7 @@ pub fn publish_package(source_dir: &Path) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-pub fn login(token: &str) -> Result<(), Box<dyn std::error::Error>> {
+pub fn login(token: &str) -> Result<()> {
     let cred_path = get_credentials_path()?;
 
     if let Some(parent) = cred_path.parent() {
