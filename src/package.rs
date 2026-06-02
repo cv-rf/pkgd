@@ -1,6 +1,5 @@
 use anyhow::{Result, Context, bail};
 use directories::ProjectDirs;
-use ed25519_dalek::ed25519::signature;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -14,6 +13,7 @@ use std::os::unix::io::AsRawFd;
 use tar::Archive;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey, Signer, SigningKey};
 use std::convert::TryInto;
+use rand::rngs::OsRng;
 
 const REGISTRY_URL: &str = "https://pkgd.atticl.com";
 
@@ -34,6 +34,11 @@ pub struct PackageManifest {
 pub struct LocalPackageRecord {
     pub manifest: PackageManifest,
     pub files: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct AuthorKeysResponse {
+    keys: Vec<String>,
 }
 
 pub fn get_db_dir(target_root: &Path) -> PathBuf {
@@ -153,32 +158,71 @@ fn resolve_and_install(
         println!("Checksum verified successfully.");
 
         if let Some(sig_hex) = &manifest.signature {
-            let keys_dir = get_db_dir(target_root).join("keys");
-            let pub_key_path = keys_dir.join(format!("{}.pub", manifest.author));
+            println!("Verifying Ed25519 signature for author '{}'...", manifest.author);
+            
+            let sig_bytes = hex::decode(sig_hex).context("Signature in manifest is not valid hex")?;
+            let signature = Signature::from_slice(&sig_bytes).context("Invalid signature length")?;
+            
+            let author_keys_dir = get_db_dir(target_root).join("keys").join(&manifest.author);
+            let mut verified = false;
 
-            if pub_key_path.exists() {
-                println!("Verifying ED25519 signature for author '{}'...", manifest.author);
+            if author_keys_dir.exists() {
+                for entry in fs::read_dir(&author_keys_dir)? {
+                    let path = entry?.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("pub") {
+                        if let Ok(pub_hex) = fs::read_to_string(&path) {
+                            if let Ok(pub_bytes) = hex::decode(pub_hex.trim()) {
+                                if let Ok(pub_bytes_arr) = pub_bytes.try_into() {
+                                    if let Ok(verifying_key) = VerifyingKey::from_bytes(&pub_bytes_arr) {
+                                        if verifying_key.verify(&tarball_bytes, &signature).is_ok() {
+                                            verified = true;
+                                            println!("Signature verified against local trusted key.");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
-                let pub_key_hex = fs::read_to_string(&pub_key_path)
-                    .context("Failed to read public key file")?;
-                let pub_key_bytes = hex::decode(pub_key_hex.trim())
-                    .context("Public key is not valid hex")?;
+            if !verified {
+                println!("No matching local key found. Fetching public keys from registry (TOFU)...");
+                let keys_api_url = format!("{}/api/authors/{}/keys", REGISTRY_URL, manifest.author);
+                let keys_response = reqwest::blocking::get(&keys_api_url)?;
 
-                let verifying_key = VerifyingKey::from_bytes(
-                    pub_key_bytes.as_slice().try_into().context("Public key must be exactly 32 bytes")?
-                ).context("Invalid ED25519 public key format")?;
+                if keys_response.status().is_success() {
+                    let keys_data: AuthorKeysResponse = keys_response.json()?;
+                    fs::create_dir_all(&author_keys_dir)?;
 
-                let sig_bytes = hex::decode(sig_hex)
-                    .context("Signature in manifest is not valid hex")?;
-                let signature = Signature::from_slice(&sig_bytes)
-                    .context("Invalid signature length")?;
+                    for (i, pub_hex) in keys_data.keys.iter().enumerate() {
+                        if let Ok(pub_bytes) = hex::decode(pub_hex.trim()) {
+                            if let Ok(pub_bytes_arr) = pub_bytes.try_into() {
+                                if let Ok(verifying_key) = VerifyingKey::from_bytes(&pub_bytes_arr) {
+                                    if verifying_key.verify(&tarball_bytes, &signature).is_ok() {
+                                        verified = true;
+                                        println!("Signature verified against newly fetched key!");
+                                    }
+                                    
+                                    let key_filename = format!("key_{}.pub", i);
+                                    let key_path = author_keys_dir.join(key_filename);
+                                    if !key_path.exists() {
+                                        fs::write(&key_path, pub_hex.trim())?;
+                                        println!("Saved new trusted key to {:?}", key_path);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    println!("Warning: Server returned {} when fetching keys.", keys_response.status());
+                }
+            }
 
-                verifying_key.verify(&tarball_bytes, &signature)
-                    .context("SECURITY ALERT: Signature verification failed! The package may have been tampered with by a compromised registry.")?;
-
-                println!("Cryptographic signature verified successfully.");
-            } else {
-                println!("Warning: No trusted public key found for author '{}' at {:?}. Skipping signature verification.", manifest.author, pub_key_path);
+            if !verified {
+                let _ = fs::remove_file(&tmp_archive_path);
+                bail!("SECURITY ALERT: Remote host identification has changed or is missing! Signature does not match any trusted keys for author '{}'.", manifest.author);
             }
         }
     }
@@ -488,7 +532,7 @@ pub fn publish_package(source_dir: &Path) -> Result<()> {
     }
 
     let manifest_str = fs::read_to_string(&manifest_path)?;
-    let manifest: PackageManifest = serde_json::from_str(&manifest_str)?;
+    let mut manifest: PackageManifest = serde_json::from_str(&manifest_str)?;
 
     println!("Packaging {} version {}...", manifest.name, manifest.version);
 
@@ -506,25 +550,29 @@ pub fn publish_package(source_dir: &Path) -> Result<()> {
 
     let tarball_bytes = fs::read(&tmp_tar_path)?;
 
-    let mut manifest_to_upload = manifest.clone();
     let priv_key_path = get_credentials_path()?.parent().unwrap().join("id_ed25519");
-
     if priv_key_path.exists() {
-        print!("Signing package with local Ed25519 key...");
+        println!("Signing package with local Ed25519 key...");
         let priv_key_hex = fs::read_to_string(&priv_key_path)?;
-        let priv_key_bytes = hex::decode(priv_key_hex.trim())?;
-
-        let signing_key = SigningKey::from_bytes(
-            priv_key_bytes.as_slice().try_into().context("Private key must be exactl 32 bytes")?
-        );
-
+        
+        let priv_key_bytes = hex::decode(priv_key_hex.trim())
+            .context("Private key is not valid hex")?;
+            
+        let priv_key_arr: [u8; 32] = priv_key_bytes.try_into()
+            .map_err(|_| anyhow::anyhow!("Private key must be exactly 32 bytes"))?;
+            
+        let signing_key = SigningKey::from_bytes(&priv_key_arr);
         let signature = signing_key.sign(&tarball_bytes);
-        manifest_to_upload.signature = Some(hex::encode(signature.to_bytes()));
+        
+        manifest.signature = Some(hex::encode(signature.to_bytes()));
+    } else {
+        println!("Warning: No local Ed25519 key found at {:?}. Publishing WITHOUT signature.", priv_key_path);
+        println!("Run `pkgd keygen` to create one.");
     }
 
-    let manifest_str = serde_json::to_string(&manifest_to_upload)?;
+    let final_manifest_str = serde_json::to_string(&manifest)?;
 
-    let part_manifest = reqwest::blocking::multipart::Part::text(manifest_str);
+    let part_manifest = reqwest::blocking::multipart::Part::text(final_manifest_str);
     let part_tarball = reqwest::blocking::multipart::Part::bytes(tarball_bytes)
         .file_name(tarball_name)
         .mime_str("application/gzip")?;
@@ -568,5 +616,42 @@ pub fn login(token: &str) -> Result<()> {
     fs::write(&cred_path, token.trim())?;
 
     println!("Logged in successfully. Token saved to {:?}", cred_path);
+    Ok(())
+}
+
+pub fn generate_keys() -> Result<()> {
+    let cred_dir = get_credentials_path()?.parent().unwrap().to_path_buf();
+    fs::create_dir_all(&cred_dir);
+
+    let priv_path = cred_dir.join("id_ed25519");
+    let pub_path = cred_dir.join("id_ed25519.pub");
+
+    if priv_path.exists() {
+        bail!("A private key already exists at {:?}. Aborting to prevent overwrite.", priv_path);
+    }
+
+    print!("Generating new Ed25519 keypair...");
+    let mut csprng = OsRng;
+    let signing_key = SigningKey::generate(&mut csprng);
+    let veryfing_key = VerifyingKey::from(&signing_key);
+
+    fs::write(&priv_path, hex::encode(signing_key.to_bytes()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&priv_path, fs::Permissions::from_mode(0o600))?;
+    }
+
+    let pub_hex = hex::encode(veryfing_key.to_bytes());
+    fs::write(&pub_path, &pub_hex)?;
+
+    println!("Keypair generated successfully!");
+    println!("Private key: {:?}", priv_path);
+    println!("Public key:  {:?}", pub_path);
+    println!("\n--- ACTION REQUIRED ---");
+    println!("Please copy the following public key and add it to your account on pkgd.atticl.com:\n");
+    println!("{}", pub_hex);
+
     Ok(())
 }

@@ -20,22 +20,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Install {
-        package_path: PathBuf,
-    },
-    Remove {
-        package_name: String,
-    },
+    Install { package_path: PathBuf },
+    Remove { package_name: String },
     List,
-    Update {
-        package_name: Option<String>,
-    },
-    Publish {
-        source_dir: PathBuf,
-    },
-    Login {
-        token: String,
-    },
+    Update { package_name: Option<String> },
+    Publish { source_dir: PathBuf },
+    Login { token: String },
+    Keygen,
 }
 
 #[cfg(unix)]
@@ -121,6 +112,10 @@ fn main() -> Result<()> {
                 bail!("Do not run 'login' with sudo. It will save credentials to the wrong user profile.");
             }
             package::login(token)?;
+        }
+        Commands::Keygen => {
+            if is_root() { bail!("Do not run 'keygen' with sudo."); }
+            package::generate_keys()?;
         }
     }
 
