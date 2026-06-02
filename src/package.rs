@@ -161,7 +161,7 @@ fn resolve_and_install(
     let download_url = format!("{}/download/{}", REGISTRY_URL, tarball_filename);
     println!("Downloading tarball from: {}", download_url);
 
-    let mut tarball_response = reqwest::blocking::get(&download_url)
+    let tarball_response = reqwest::blocking::get(&download_url)
         .with_context(|| format!("Failed to download tarball for {}", package_name))?;
         
     if !tarball_response.status().is_success() {
