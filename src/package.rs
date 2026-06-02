@@ -667,7 +667,8 @@ pub fn publish_package(source_dir: &Path) -> Result<()> {
 
     println!("Packaging {} version {}...", manifest.name, manifest.version);
 
-    let tarball_name = format!("{}-{}.tar.gz", manifest.name, manifest.version);
+    let safe_name = manifest.name.replace('/', "_");
+    let tarball_name = format!("{}-{}.tar.gz", safe_name, manifest.version);
     let tmp_tar_path = std::env::temp_dir().join(&tarball_name);
     let tar_file = File::create(&tmp_tar_path)?;
 
