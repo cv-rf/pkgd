@@ -1,5 +1,6 @@
 use anyhow::{Result, Context, bail};
 use directories::ProjectDirs;
+use ed25519_dalek::ed25519::signature;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -11,6 +12,8 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::os::unix::io::AsRawFd;
 use tar::Archive;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey, Signer, SigningKey};
+use std::convert::TryInto;
 
 const REGISTRY_URL: &str = "https://pkgd.atticl.com";
 
@@ -23,6 +26,8 @@ pub struct PackageManifest {
     pub checksum: Option<String>,
     #[serde(default)]
     pub dependencies: Option<Vec<String>>,
+    #[serde(default)]
+    pub signature: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -146,6 +151,36 @@ fn resolve_and_install(
             );
         }
         println!("Checksum verified successfully.");
+
+        if let Some(sig_hex) = &manifest.signature {
+            let keys_dir = get_db_dir(target_root).join("keys");
+            let pub_key_path = keys_dir.join(format!("{}.pub", manifest.author));
+
+            if pub_key_path.exists() {
+                println!("Verifying ED25519 signature for author '{}'...", manifest.author);
+
+                let pub_key_hex = fs::read_to_string(&pub_key_path)
+                    .context("Failed to read public key file")?;
+                let pub_key_bytes = hex::decode(pub_key_hex.trim())
+                    .context("Public key is not valid hex")?;
+
+                let verifying_key = VerifyingKey::from_bytes(
+                    pub_key_bytes.as_slice().try_into().context("Public key must be exactly 32 bytes")?
+                ).context("Invalid ED25519 public key format")?;
+
+                let sig_bytes = hex::decode(sig_hex)
+                    .context("Signature in manifest is not valid hex")?;
+                let signature = Signature::from_slice(&sig_bytes)
+                    .context("Invalid signature length")?;
+
+                verifying_key.verify(&tarball_bytes, &signature)
+                    .context("SECURITY ALERT: Signature verification failed! The package may have been tampered with by a compromised registry.")?;
+
+                println!("Cryptographic signature verified successfully.");
+            } else {
+                println!("Warning: No trusted public key found for author '{}' at {:?}. Skipping signature verification.", manifest.author, pub_key_path);
+            }
+        }
     }
 
     println!("Download complete for {}. Handing off to local installation pipeline...", package_name);
@@ -470,6 +505,24 @@ pub fn publish_package(source_dir: &Path) -> Result<()> {
     println!("Archive created successfully. Uploading to registry...");
 
     let tarball_bytes = fs::read(&tmp_tar_path)?;
+
+    let mut manifest_to_upload = manifest.clone();
+    let priv_key_path = get_credentials_path()?.parent().unwrap().join("id_ed25519");
+
+    if priv_key_path.exists() {
+        print!("Signing package with local Ed25519 key...");
+        let priv_key_hex = fs::read_to_string(&priv_key_path)?;
+        let priv_key_bytes = hex::decode(priv_key_hex.trim())?;
+
+        let signing_key = SigningKey::from_bytes(
+            priv_key_bytes.as_slice().try_into().context("Private key must be exactl 32 bytes")?
+        );
+
+        let signature = signing_key.sign(&tarball_bytes);
+        manifest_to_upload.signature = Some(hex::encode(signature.to_bytes()));
+    }
+
+    let manifest_str = serde_json::to_string(&manifest_to_upload)?;
 
     let part_manifest = reqwest::blocking::multipart::Part::text(manifest_str);
     let part_tarball = reqwest::blocking::multipart::Part::bytes(tarball_bytes)
