@@ -27,6 +27,7 @@ enum Commands {
     Publish { source_dir: PathBuf },
     Login { token: String },
     Keygen,
+    Autoremove,
 }
 
 #[cfg(unix)]
@@ -64,7 +65,7 @@ fn main() -> Result<()> {
             
             if pkg_name.ends_with(".tar.gz") && package_path.exists() {
                 println!("Installing from local file: {:?}", package_path);
-                package::install_package(&package_path, &target_root)?;
+                package::install_package(&package_path, &target_root, false)?;
             } else {
                 println!("Searching remote registry for: {}", pkg_name);
                 package::download_and_install_package(&pkg_name, &target_root)?;
@@ -116,6 +117,13 @@ fn main() -> Result<()> {
         Commands::Keygen => {
             if is_root() { bail!("Do not run 'keygen' with sudo."); }
             package::generate_keys()?;
+        }
+        Commands::Autoremove => {
+            if !is_root() && target_root == Path::new("/") {
+                bail!("You must run 'autoremove' with sudo privileges to modify the system root");
+            }
+            let _lock = package::acquire_lock(&target_root).context("Failed to acquire database lock.")?;
+            package::autoremove_packages(&target_root)?;
         }
     }
 

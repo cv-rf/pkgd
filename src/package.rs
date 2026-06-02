@@ -35,6 +35,8 @@ pub struct PackageManifest {
 pub struct LocalPackageRecord {
     pub manifest: PackageManifest,
     pub files: Vec<String>,
+    #[serde(default)]
+    pub installed_as_dependency: bool,
 }
 
 #[derive(Deserialize)]
@@ -87,12 +89,13 @@ pub fn download_and_install_package(
     target_root: &Path,
 ) -> Result<()> {
     let mut resolved = HashSet::new();
-    resolve_and_install(package_name, target_root, &mut resolved)
+    resolve_and_install(package_name, target_root, false, &mut resolved)
 }
 
 fn resolve_and_install(
     package_identifier: &str,
     target_root: &Path,
+    is_dependency: bool,
     resolved: &mut HashSet<String>,
 ) -> Result<()> {
     let (package_name, requested_version) = if let Some(idx) = package_identifier.find('@') {
@@ -153,7 +156,7 @@ fn resolve_and_install(
     if let Some(deps) = &manifest.dependencies {
         for dep in deps {
             println!("Resolving dependency '{}' for package '{}'...", dep, package_name);
-            resolve_and_install(dep, target_root, resolved)?;
+            resolve_and_install(dep, target_root, true, resolved)?;
         }
     }
 
@@ -292,14 +295,14 @@ fn resolve_and_install(
 
     println!("Download complete for {}. Handing off to local installation pipeline...", package_name);
 
-    install_package(&tmp_archive_path, target_root)?;
+    install_package(&tmp_archive_path, target_root, is_dependency)?;
 
     let _ = fs::remove_file(tmp_archive_path);
 
     Ok(())
 }
 
-pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<()> {
+pub fn install_package(archive_path: &Path, target_root: &Path, installed_as_dependency: bool) -> Result<()> {
     let file = File::open(archive_path)?;
     let tar_gz = GzDecoder::new(file);
     let mut archive = Archive::new(tar_gz);
@@ -416,6 +419,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<()> {
     let record = LocalPackageRecord {
         manifest: manifest.clone(),
         files: installed_files,
+        installed_as_dependency,
     };
     
     let db_dir = get_db_dir(target_root);
@@ -735,6 +739,72 @@ pub fn generate_keys() -> Result<()> {
     println!("\n--- ACTION REQUIRED ---");
     println!("Please copy the following public key and add it to your account on pkgd.atticl.com:\n");
     println!("{}", pub_hex);
+
+    Ok(())
+}
+
+pub fn autoremove_packages(target_root: &Path) -> Result<()> {
+    let db_dir = get_db_dir(target_root);
+    if !db_dir.exists() {
+        println!("No packages installed.");
+        return Ok(());
+    }
+
+    let mut cleared_any = false;
+
+    loop {
+        let mut all_records = Vec::new();
+        let mut required_deps = HashSet::new();
+
+        for entry in fs::read_dir(&db_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
+                if path.file_name().and_then(|s| s.to_str()) == Some(".pkgd.lock") {
+                    continue;
+                }
+
+                let file = File::open(&path)?;
+                if let Ok(record) = serde_json::from_reader::<_, LocalPackageRecord>(file) {
+                    all_records.push(record.clone());
+                    
+                    if let Some(deps) = &record.manifest.dependencies {
+                        for dep in deps {
+                            let dep_name = if let Some(idx) = dep.find('@') {
+                                &dep[..idx]
+                            } else {
+                                dep
+                            };
+                            required_deps.insert(dep_name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut orphan_to_remove = None;
+        for record in &all_records {
+            if record.installed_as_dependency && !required_deps.contains(&record.manifest.name) {
+                orphan_to_remove = Some(record.manifest.name.clone());
+                break;
+            }
+        }
+
+        if let Some(pkg_name) = orphan_to_remove {
+            println!("Orphan dependency discovered: '{}'. Automatically pruning...", pkg_name);
+            remove_package(&pkg_name, target_root)?;
+            cleared_any = true;
+        } else {
+            break;
+        }
+    }
+
+    if cleared_any {
+        println!("Autoremove complete. Unused dependencies successfully purged from the file system.");
+    } else {
+        println!("No unused dependencies found on the system.");
+    }
 
     Ok(())
 }
