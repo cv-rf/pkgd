@@ -506,79 +506,47 @@ pub fn list_packages(target_root: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn update_packages(
-    package_name: Option<&str>,
-    target_root: &Path,
-) -> Result<()> {
-    let db_dir = get_db_dir(target_root);
-
-    if !db_dir.exists() {
-        println!("No packages installed.");
-        return Ok(());
-    }
-
-    let mut packages_to_check = Vec::new();
-
-    if let Some(name) = package_name {
-        let db_file_path = db_dir.join(format!("{}.json", name));
-        if !db_file_path.exists() {
-            bail!("Package '{}' is not installed.", name);
-        }
-        packages_to_check.push(name.to_string());
+pub fn update_packages(package_name: Option<&str>, target_root: &Path) -> Result<()> {
+    let packages_to_update = if let Some(name) = package_name {
+        vec![name.to_string()]
     } else {
-        for entry in fs::read_dir(&db_dir)? {
-            let entry = entry?;
-            let path = entry.path();
+        let records = get_all_installed_records(target_root)?;
+        records.into_iter().map(|r| r.manifest.name).collect()
+    };
 
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
-                if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                    packages_to_check.push(name.to_string());
-                }   
-            }
-        }
-    }
+    let mut updated_count = 0;
 
-    let mut updates_available = Vec::new();
-
-    for pkg_name in packages_to_check {
-        let db_file_path = db_dir.join(format!("{}.json", &pkg_name));
-        let file = File::open(&db_file_path)?;
-        let local_record: LocalPackageRecord = serde_json::from_reader(file)?;
-
-        let api_url = format!("{}/api/packages/{}", REGISTRY_URL, pkg_name);
-
+    for pkg_name in packages_to_update {
+        let safe_name = urlencoding::encode(&pkg_name);
+        let api_url = format!("{}/api/packages/{}", REGISTRY_URL, safe_name);
+        
         let response = reqwest::blocking::get(&api_url)?;
-        if response.status() == reqwest::StatusCode::OK {
-            let remote_manifest: PackageManifest = response.json()?;
+        if !response.status().is_success() {
+            println!("Warning: Could not check updates for {} (Server returned {})", pkg_name, response.status());
+            continue;
+        }
 
-            if remote_manifest.version != local_record.manifest.version {
-                println!(
-                    "Update available for {}: {} -> {}",
-                    pkg_name, local_record.manifest.version, remote_manifest.version
-                );
-                updates_available.push(pkg_name);
-            } else {
-                println!("{} is up to date ({}).", pkg_name, local_record.manifest.version);
+        let remote_manifest: PackageManifest = response.json()?;
+        
+        let db_file_path = get_db_dir(target_root).join(format!("{}.json", pkg_name));
+        if let Ok(file) = std::fs::File::open(&db_file_path) {
+            if let Ok(local_record) = serde_json::from_reader::<_, LocalPackageRecord>(file) {
+                
+                if remote_manifest.version != local_record.manifest.version {
+                    println!("Updating {} from v{} to v{}...", pkg_name, local_record.manifest.version, remote_manifest.version);
+                    
+                    remove_package(&pkg_name, target_root)?;
+                    download_and_install_package(&pkg_name, target_root)?;
+                    
+                    updated_count += 1;
+                } else {
+                    println!("{} is already up to date (v{}).", pkg_name, local_record.manifest.version);
+                }
             }
-        } else {
-            println!("Warning: Could not check updates for {} (server returned {})", pkg_name, response.status());
         }
     }
 
-    if updates_available.is_empty() {
-        println!("Everything is up to date!");
-        return Ok(());
-    }
-
-    for pkg_name in updates_available {
-        println!("\n--- Updating {} ---", pkg_name);
-
-        remove_package(&pkg_name, target_root)?;
-        download_and_install_package(&pkg_name, target_root)?;
-
-        println!("Successfully updated: {}!", pkg_name);
-    }
-
+    println!("Update complete. {} packages updated.", updated_count);
     Ok(())
 }
 
