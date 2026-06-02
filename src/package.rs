@@ -202,7 +202,7 @@ fn resolve_and_install(
     }
 
     let safe_manifest_name = manifest.name.replace('/', "_");
-    let tarball_filename = format!("{}-{}.tar.gz", manifest.name, manifest.version);
+    let tarball_filename = format!("{}-{}.tar.gz", safe_manifest_name, manifest.version);
     let download_url = format!("{}/download/{}", REGISTRY_URL, tarball_filename);
     println!("Downloading tarball from: {}", download_url);
 
