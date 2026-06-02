@@ -284,7 +284,7 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<()> {
                 let dest_path = target_root.join(safe_path);
 
                 if let Some(parent) = dest_path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    let _ = std::fs::create_dir_all(parent)?;
                 }
 
                 entry.unpack(&dest_path)?;
@@ -609,7 +609,7 @@ pub fn login(token: &str) -> Result<()> {
     let cred_path = get_credentials_path()?;
 
     if let Some(parent) = cred_path.parent() {
-        fs::create_dir_all(parent)?;
+        let _ = fs::create_dir_all(parent)?;
     }
 
     fs::write(&cred_path, token.trim())?;
@@ -620,7 +620,7 @@ pub fn login(token: &str) -> Result<()> {
 
 pub fn generate_keys() -> Result<()> {
     let cred_dir = get_credentials_path()?.parent().unwrap().to_path_buf();
-    fs::create_dir_all(&cred_dir);
+    let _ = fs::create_dir_all(&cred_dir);
 
     let priv_path = cred_dir.join("id_ed25519");
     let pub_path = cred_dir.join("id_ed25519.pub");
