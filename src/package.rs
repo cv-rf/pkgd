@@ -203,7 +203,8 @@ fn resolve_and_install(
 
     let safe_manifest_name = manifest.name.replace('/', "_");
     let tarball_filename = format!("{}-{}.tar.gz", safe_manifest_name, manifest.version);
-    let download_url = format!("{}/download/{}", REGISTRY_URL, tarball_filename);
+    let encoded_filename = urlencoding::encode(&tarball_filename);
+    let download_url = format!("{}/download/{}", REGISTRY_URL, encoded_filename);
     println!("Downloading tarball from: {}", download_url);
 
     let tarball_response = reqwest::blocking::get(&download_url)
