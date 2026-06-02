@@ -201,6 +201,7 @@ fn resolve_and_install(
         }
     }
 
+    let safe_manifest_name = manifest.name.replace('/', "_");
     let tarball_filename = format!("{}-{}.tar.gz", manifest.name, manifest.version);
     let download_url = format!("{}/download/{}", REGISTRY_URL, tarball_filename);
     println!("Downloading tarball from: {}", download_url);
@@ -766,7 +767,7 @@ pub fn autoremove_packages(target_root: &Path) -> Result<()> {
     let mut cleared_any = false;
 
     loop {
-        let mut all_records = Vec::new();
+        let mut all_records = get_all_installed_records(target_root)?;
         let mut required_deps = HashSet::new();
 
         for entry in fs::read_dir(&db_dir)? {
@@ -796,20 +797,21 @@ pub fn autoremove_packages(target_root: &Path) -> Result<()> {
             }
         }
 
+        for record in &all_records {
+            if let Some(deps) = &record.manifest.dependencies {
+                for dep in deps {
+                    let (dep_name, _) = parse_identifier(dep);
+                    required_deps.insert(dep_name.to_string());
+                }
+            }
+        }
+        
         let mut orphan_to_remove = None;
         for record in &all_records {
             if record.installed_as_dependency && !required_deps.contains(&record.manifest.name) {
                 orphan_to_remove = Some(record.manifest.name.clone());
                 break;
             }
-        }
-
-        if let Some(pkg_name) = orphan_to_remove {
-            println!("Orphan dependency discovered: '{}'. Automatically pruning...", pkg_name);
-            remove_package(&pkg_name, target_root)?;
-            cleared_any = true;
-        } else {
-            break;
         }
     }
 
