@@ -193,7 +193,7 @@ fn resolve_and_install(
 
                 if keys_response.status().is_success() {
                     let keys_data: AuthorKeysResponse = keys_response.json()?;
-                    fs::create_dir_all(&author_keys_dir)?;
+                    let _ = fs::create_dir_all(&author_keys_dir)?;
 
                     for (i, pub_hex) in keys_data.keys.iter().enumerate() {
                         if let Ok(pub_bytes) = hex::decode(pub_hex.trim()) {
