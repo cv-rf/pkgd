@@ -3,7 +3,7 @@ use directories::ProjectDirs;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
@@ -284,16 +284,29 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<()> {
     let mut archive = Archive::new(tar_gz);
 
     let mut manifest: Option<PackageManifest> = None;
+    let mut collisions = Vec::new();
 
     for entry in archive.entries()? {
         let mut entry = entry?;
-        let path = entry.path()?;
-
+        let path = entry.path()?.to_path_buf();
         let clean_path = path.strip_prefix(".").unwrap_or(&path);
 
         if clean_path.to_str() == Some("manifest.json") {
             manifest = Some(serde_json::from_reader(&mut entry)?);
-            break;
+            continue;
+        }
+
+        if !entry.header().entry_type().is_dir() {
+            let mut safe_path = clean_path;
+            while let Ok(stripped) = safe_path.strip_prefix("/") {
+                safe_path = stripped;
+            }
+
+            let dest_path = target_root.join(safe_path);
+
+            if dest_path.exists() {
+                collisions.push(dest_path.to_string_lossy().to_string());
+            }
         }
     }
 
@@ -301,6 +314,13 @@ pub fn install_package(archive_path: &Path, target_root: &Path) -> Result<()> {
         Some(m) => m,
         None => bail!("Failed to find manifest.json in package archive"),
     };
+
+    if !collisions.is_empty() {
+        bail!(
+            "FILE COLLISION DETECTED!\nThe following files already exist on the system and belong to another package:\n  - {}\n\nAborting installation to prevent system corruption.",
+            collisions.join("\n  - ")
+        );
+    }
 
     println!("Extracting package: {} ({})", manifest.name, manifest.version);
 
