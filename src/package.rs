@@ -214,7 +214,7 @@ fn resolve_and_install(
 
 
     let encoded_filename = urlencoding::encode(&manifest.name);
-    let download_url = format!("{}/download/{}", REGISTRY_URL, encoded_filename);
+    let download_url = format!("{}/download/{}-{}.tar.gz", REGISTRY_URL, encoded_manifest_name, manifest.version);
 
     println!("Downloading tarball from: {}", download_url);
 
