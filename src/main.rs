@@ -25,7 +25,7 @@ enum Commands {
     List,
     Update { package_name: Option<String> },
     Publish { source_dir: PathBuf },
-    Login { token: String },
+    Login { token: Option<String> },
     Keygen,
     Autoremove,
 }
@@ -112,7 +112,7 @@ fn main() -> Result<()> {
             if is_root() {
                 bail!("Do not run 'login' with sudo. It will save credentials to the wrong user profile.");
             }
-            package::login(token)?;
+            package::login(token.clone())?;
         }
         Commands::Keygen => {
             if is_root() { bail!("Do not run 'keygen' with sudo."); }

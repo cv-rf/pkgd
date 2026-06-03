@@ -39,6 +39,17 @@ pub struct LocalPackageRecord {
     pub installed_as_dependency: bool,
 }
 
+#[derive(Serialize)]
+struct LoginRequest<'a> {
+    pub username: &'a str,
+    pub password: &'a str,
+}
+
+#[derive(Deserialize)]
+struct LoginResponse {
+    pub token: String,
+}
+
 #[derive(Deserialize)]
 struct KeyInfo {
     name: String,
@@ -203,8 +214,11 @@ fn resolve_and_install(
 
     let safe_manifest_name = manifest.name.replace('/', "_");
     let tarball_filename = format!("{}-{}.tar.gz", safe_manifest_name, manifest.version);
+
+
     let encoded_filename = urlencoding::encode(&tarball_filename);
     let download_url = format!("{}/download/{}", REGISTRY_URL, encoded_filename);
+
     println!("Downloading tarball from: {}", download_url);
 
     let tarball_response = reqwest::blocking::get(&download_url)
@@ -708,16 +722,51 @@ pub fn publish_package(source_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn login(token: &str) -> Result<()> {
-    let cred_path = get_credentials_path()?;
+pub fn login(token: Option<String>) -> Result<()> {
+    let final_token = if let Some(t) = token {
+        t
+    } else {
+        println!("Log in to {}", REGISTRY_URL);
 
+        print!("Username: ");
+        io::stdout().flush()?;
+        let mut username = String::new();
+        io::stdin().read_line(&mut username)?;
+        let username = username.trim();
+
+        let password = rpassword::prompt_password("Password: ")?;
+
+        println!("Authenticating...");
+
+        let client = reqwest::blocking::Client::new();
+        let res = client
+            .post(format!("{}/api/login", REGISTRY_URL))
+            .json(&LoginRequest {
+                username,
+                password: &password,
+            })
+            .send()
+            .context("Failed to connect to the registry for authentication")?;
+
+        if res.status().is_success() {
+            let login_data: LoginResponse = res.json()
+                .context("Server returned invalid JSON for login response")?;
+            login_data.token
+        } else if res.status() == reqwest::StatusCode::UNAUTHORIZED {
+            bail!("Invalid username or password.");
+        } else {
+            bail!("Login failed. Server returned HTTP {}", res.status());
+        }
+    };
+
+    let cred_path = get_credentials_path()?;
     if let Some(parent) = cred_path.parent() {
         let _ = fs::create_dir_all(parent)?;
     }
 
-    fs::write(&cred_path, token.trim())?;
+    fs::write(&cred_path, final_token.trim());
 
-    println!("Logged in successfully. Token saved to {:?}", cred_path);
+    println!("Logged in successfully. Credentials saved.");
     Ok(())
 }
 
