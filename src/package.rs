@@ -3,7 +3,7 @@ use directories::ProjectDirs;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use serde::{Deserialize, Serialize, de};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashSet, HashMap};
 use std::fs;
@@ -245,10 +245,8 @@ fn resolve_and_install(
             (manifest.checksum.clone(), manifest.signature.clone(), "".to_string())
         };
 
-    let tarball_filename = format!("{}-{}{}.tar.gz", safe_name, manifest.version, tarball_suffix);
-
-    let encoded_filename = urlencoding::encode(&tarball_filename);
-    let download_url = format!("{}/download/{}", REGISTRY_URL, encoded_filename);
+    let encoded_manifest_name = urlencoding::encode(&manifest.name);
+    let download_url = format!("{}/download/{}-{}{}.tar.gz", REGISTRY_URL, encoded_manifest_name, manifest.version, tarball_suffix);
 
     println!("Downloading tarball from: {}", download_url);
 
@@ -685,8 +683,10 @@ pub fn publish_package(source_dir: &Path) -> Result<()> {
 
     println!("Packaging {} version {}...", manifest.name, manifest.version);
 
+    let host_target = get_host_target();
     let safe_name = manifest.name.replace('/', "_");
-    let tarball_name = format!("{}-{}.tar.gz", safe_name, manifest.version);
+
+    let tarball_name = format!("{}-{}-{}.tar.gz", safe_name, manifest.version, host_target);
     let tmp_tar_path = std::env::temp_dir().join(&tarball_name);
     let tar_file = File::create(&tmp_tar_path)?;
 
@@ -701,8 +701,10 @@ pub fn publish_package(source_dir: &Path) -> Result<()> {
     let tarball_bytes = fs::read(&tmp_tar_path)?;
 
     let priv_key_path = get_credentials_path()?.parent().unwrap().join("id_ed25519");
+
+    let mut signature_hex = None;
     if priv_key_path.exists() {
-        println!("Signing package with local Ed25519 key...");
+        println!("Signing package for {} with local Ed25519 key...", host_target);
         let priv_key_hex = fs::read_to_string(&priv_key_path)?;
         
         let priv_key_bytes = hex::decode(priv_key_hex.trim())
@@ -719,6 +721,19 @@ pub fn publish_package(source_dir: &Path) -> Result<()> {
         println!("Warning: No local Ed25519 key found at {:?}. Publishing WITHOUT signature.", priv_key_path);
         println!("Run `pkgd keygen` to create one.");
     }
+
+    let mut hasher = Sha256::new();
+    hasher.update(&tarball_bytes);
+    let checksum = hex::encode(hasher.finalize());
+
+    let target_asset = TargetAsset {
+        checksum,
+        signature: signature_hex,
+    };
+
+    let mut targets = HashMap::new();
+    targets.insert(host_target, target_asset);
+    manifest.targets = Some(targets);
 
     let final_manifest_str = serde_json::to_string(&manifest)?;
 
@@ -848,38 +863,11 @@ pub fn autoremove_packages(target_root: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let cleared_any = false;
+    let mut cleared_any = false;
 
     loop {
-        let mut all_records = get_all_installed_records(target_root)?;
+        let all_records = get_all_installed_records(target_root)?;
         let mut required_deps = HashSet::new();
-
-        for entry in fs::read_dir(&db_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("json") {
-                if path.file_name().and_then(|s| s.to_str()) == Some(".pkgd.lock") {
-                    continue;
-                }
-
-                let file = File::open(&path)?;
-                if let Ok(record) = serde_json::from_reader::<_, LocalPackageRecord>(file) {
-                    all_records.push(record.clone());
-                    
-                    if let Some(deps) = &record.manifest.dependencies {
-                        for dep in deps {
-                            let dep_name = if let Some(idx) = dep.find('@') {
-                                &dep[..idx]
-                            } else {
-                                dep
-                            };
-                            required_deps.insert(dep_name.to_string());
-                        }
-                    }
-                }
-            }
-        }
 
         for record in &all_records {
             if let Some(deps) = &record.manifest.dependencies {
@@ -890,12 +878,20 @@ pub fn autoremove_packages(target_root: &Path) -> Result<()> {
             }
         }
         
-        let mut _orphan_to_remove = None;
+        let mut orphan_to_remove = None;
         for record in &all_records {
             if record.installed_as_dependency && !required_deps.contains(&record.manifest.name) {
-                _orphan_to_remove = Some(record.manifest.name.clone());
+                orphan_to_remove = Some(record.manifest.name.clone());
                 break;
             }
+        }
+
+        if let Some(pkg_name) = orphan_to_remove {
+            println!("Orphan dependency discovered: '{}'. Automatically pruning...", pkg_name);
+            remove_package(&pkg_name, target_root)?;
+            cleared_any = true;
+        } else {
+            break;
         }
     }
 
