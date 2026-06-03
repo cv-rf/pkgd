@@ -67,7 +67,6 @@ pub fn get_db_dir(target_root: &Path) -> PathBuf {
     if target_root == Path::new("/") {
         PathBuf::from("/var/lib/pkgd/installed")
     } else {
-        // If it's a user-local root, follow XDG-like structure: root/share/pkgd/installed
         target_root.join("share/pkgd/installed")
     }
 }
@@ -213,11 +212,8 @@ fn resolve_and_install(
         }
     }
 
-    let safe_manifest_name = manifest.name.replace('/', "_");
-    let tarball_filename = format!("{}-{}.tar.gz", safe_manifest_name, manifest.version);
 
-
-    let encoded_filename = urlencoding::encode(&tarball_filename);
+    let encoded_filename = urlencoding::encode(&manifest.name);
     let download_url = format!("{}/download/{}", REGISTRY_URL, encoded_filename);
 
     println!("Downloading tarball from: {}", download_url);
@@ -245,6 +241,9 @@ fn resolve_and_install(
         .progress_chars("#>-")
     );
     pb.set_message(format!("Downloading {}", package_name));
+
+    let safe_manifest_name = manifest.name.replace('/', "_");
+    let tarball_filename = format!("{}-{}.tar.gz", safe_manifest_name, manifest.version);
 
     let tmp_dir = std::env::temp_dir();
     let tmp_archive_path = tmp_dir.join(&tarball_filename);
