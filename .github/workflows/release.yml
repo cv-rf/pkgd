@@ -16,8 +16,6 @@ jobs:
             suffix: -amd64-glibc
           - target: x86_64-unknown-linux-musl
             suffix: -amd64-musl
-          - target: aarch64-linux-android
-            suffix: -termux-aarch64
     
     steps:
       - name: Checkout repository
@@ -31,15 +29,6 @@ jobs:
       - name: Install musl-tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-
-      - name: Setup Android NDK for Termux
-        if: matrix.target == 'aarch64-linux-android'
-        run: |
-          # GitHub Actions has the Android NDK pre-installed. 
-          # We just need to tell Cargo where the Android clang linker is!
-          CLANG_PATH=$(find $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin -name "aarch64-linux-android24-clang" | head -n 1)
-          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CLANG_PATH" >> $GITHUB_ENV
-          echo "CC_aarch64_linux_android=$CLANG_PATH" >> $GITHUB_ENV
 
       - name: Build binary
         run: cargo build --release --target ${{ matrix.target }}
