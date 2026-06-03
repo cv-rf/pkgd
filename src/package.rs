@@ -15,6 +15,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey, Signer, SigningKey};
 use std::convert::TryInto;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io;
+use std::io::{Write};
 
 const REGISTRY_URL: &str = "https://pkgd.atticl.com";
 
