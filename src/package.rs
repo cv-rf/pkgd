@@ -245,9 +245,13 @@ fn resolve_and_install(
             (manifest.checksum.clone(), manifest.signature.clone(), "".to_string())
         };
 
-    let encoded_manifest_name = urlencoding::encode(&manifest.name);
-    let download_url = format!("{}/download/{}-{}{}.tar.gz", REGISTRY_URL, encoded_manifest_name, manifest.version, tarball_suffix);
-
+    let safe_manifest_name = manifest.name.replace('/', "_");
+    
+    let tarball_filename = format!("{}-{}{}.tar.gz", safe_manifest_name, manifest.version, tarball_suffix);
+    
+    let encoded_filename = urlencoding::encode(&tarball_filename);
+    let download_url = format!("{}/download/{}", REGISTRY_URL, encoded_filename);
+    
     println!("Downloading tarball from: {}", download_url);
 
     let tarball_response = reqwest::blocking::get(&download_url)
