@@ -5,7 +5,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize, de};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
 use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -20,12 +20,20 @@ use std::io::{Write};
 const REGISTRY_URL: &str = "https://pkgd.atticl.com";
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TargetAsset {
+    pub checksum: String,
+    pub signature: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PackageManifest {
     pub name: String,
     pub version: String,
     pub description: String,
     pub author: String,
     pub checksum: Option<String>,
+    #[serde(default)]
+    pub targets: Option<HashMap<String, TargetAsset>>,
     #[serde(default)]
     pub dependencies: Option<Vec<String>>,
     #[serde(default)]
@@ -68,6 +76,25 @@ pub fn get_db_dir(target_root: &Path) -> PathBuf {
         PathBuf::from("/var/lib/pkgd/installed")
     } else {
         target_root.join("share/pkgd/installed")
+    }
+}
+
+pub fn get_host_target() -> String {
+    let arch = std::env::consts::ARCH;
+    let os = std::env::consts::OS;
+    
+    let env = if cfg!(target_env = "musl") { 
+        "musl" 
+    } else if cfg!(target_env = "gnu") {
+        "gnu"
+    } else {
+        ""
+    };
+    
+    if env.is_empty() {
+        format!("{}-{}", arch, os)
+    } else {
+        format!("{}-{}-{}", arch, os, env)
     }
 }
 
@@ -203,18 +230,25 @@ fn resolve_and_install(
 
     println!("Found remote package: {} ({})", manifest.name, manifest.version);
 
-    resolved.insert(package_name.to_string());
+    let host_target = get_host_target();
 
-    if let Some(deps) = &manifest.dependencies {
-        for dep in deps {
-            println!("Resolving dependency '{}' for package '{}'...", dep, package_name);
-            resolve_and_install(dep, target_root, true, resolved)?;
-        }
-    }
+    let (expected_checksum, expected_signature, tarball_suffix) =
+        if let Some(targets) = &manifest.targets {
+            if let Some(asset) = targets.get(&host_target) {
+                println!("Found native binary for {}", host_target);
+                (Some(asset.checksum.clone()), asset.signature.clone(), format!("-{}", host_target))
+            } else {
+                println!("Warning: No native binary found for {}. Falling back to generic package.", host_target);
+                (manifest.checksum.clone(), manifest.signature.clone(), "".to_string())
+            }
+        } else {
+            (manifest.checksum.clone(), manifest.signature.clone(), "".to_string())
+        };
 
+    let tarball_filename = format!("{}-{}{}.tar.gz", safe_name, manifest.version, tarball_suffix);
 
-    let encoded_manifest_name = urlencoding::encode(&manifest.name);
-    let download_url = format!("{}/download/{}-{}.tar.gz", REGISTRY_URL, encoded_manifest_name, manifest.version);
+    let encoded_filename = urlencoding::encode(&tarball_filename);
+    let download_url = format!("{}/download/{}", REGISTRY_URL, encoded_filename);
 
     println!("Downloading tarball from: {}", download_url);
 
@@ -243,7 +277,7 @@ fn resolve_and_install(
     pb.set_message(format!("Downloading {}", package_name));
 
     let safe_manifest_name = manifest.name.replace('/', "_");
-    let tarball_filename = format!("{}-{}.tar.gz", safe_manifest_name, manifest.version);
+    let tarball_filename = format!("{}-{}{}.tar.gz", safe_manifest_name, manifest.version, tarball_suffix);
 
     let tmp_dir = std::env::temp_dir();
     let tmp_archive_path = tmp_dir.join(&tarball_filename);
@@ -253,7 +287,7 @@ fn resolve_and_install(
 
     io::copy(&mut source, &mut tmp_file)?;
 
-    if let Some(expected_hash) = &manifest.checksum {
+    if let Some(expected_hash) = &expected_checksum {
         println!("Verifying SHA-256 checksum for {}...", package_name);
         let tarball_bytes = fs::read(&tmp_archive_path)?;
 
@@ -270,7 +304,7 @@ fn resolve_and_install(
         }
         println!("Checksum verified successfully.");
 
-        if let Some(sig_hex) = &manifest.signature {
+        if let Some(sig_hex) = &expected_signature {
             println!("Verifying Ed25519 signature for author '{}'...", manifest.author);
             
             let sig_bytes = hex::decode(sig_hex).context("Signature in manifest is not valid hex")?;
