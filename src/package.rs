@@ -764,7 +764,7 @@ pub fn login(token: Option<String>) -> Result<()> {
         let _ = fs::create_dir_all(parent)?;
     }
 
-    fs::write(&cred_path, final_token.trim());
+    let _ = fs::write(&cred_path, final_token.trim());
 
     println!("Logged in successfully. Credentials saved.");
     Ok(())
@@ -814,7 +814,7 @@ pub fn autoremove_packages(target_root: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let mut cleared_any = false;
+    let cleared_any = false;
 
     loop {
         let mut all_records = get_all_installed_records(target_root)?;
@@ -856,10 +856,10 @@ pub fn autoremove_packages(target_root: &Path) -> Result<()> {
             }
         }
         
-        let mut orphan_to_remove = None;
+        let mut _orphan_to_remove = None;
         for record in &all_records {
             if record.installed_as_dependency && !required_deps.contains(&record.manifest.name) {
-                orphan_to_remove = Some(record.manifest.name.clone());
+                _orphan_to_remove = Some(record.manifest.name.clone());
                 break;
             }
         }
